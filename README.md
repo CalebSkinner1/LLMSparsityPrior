@@ -41,7 +41,7 @@ source("MCMC Samplers/LSP_regression_fixed_s.R")
 n <- 100; p <- 100; signals <- 5
 
 X <- MASS::mvrnorm(n, mu = rep(0, p), diag(p))
-beta_true <- c(rep(0, p - s), rep(1, s))
+beta_true <- c(rep(0, p - signals), rep(1, signals))
 alpha_true <- 1
 y <- X %*% beta_true + alpha_true + rnorm(n, 0, sd = 1)
 
