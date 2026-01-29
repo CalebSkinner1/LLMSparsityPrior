@@ -56,7 +56,7 @@ fit <- lsp_fixed_gibbs_sampler(
   c = 1,
   sparsity = 0.05,
   a_sigma = 1,
-  a_sigma = 1,
+  b_sigma = 1,
   tau = 1)
 
 # Extract Posterior Means, etc.
