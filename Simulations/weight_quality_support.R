@@ -382,8 +382,13 @@ sim_function <- function(seed, n, weights) {
   metrics_list <- list("lasso" = lasso_results, "llm-lasso" = llm_lasso_results)
 
   if (fixed_s == TRUE) {
+    # naming convention:
+    # first letter is p if prior on sparsity, f if fixed theta;
+    # second letter is c if constant weights, r if random weights, t if traditional;
+    # third letter is r for regression, c for classification
+    
     # run standard discrete spike and slab
-    dssr_samples <- fswr_gibbs_sampler(
+    ftr_samples <- fswr_gibbs_sampler(
       X,
       y,
       c = 0,
@@ -394,7 +399,7 @@ sim_function <- function(seed, n, weights) {
     )
 
     # run LSP with confidence = 0.5
-    rvwr_samples <- fswr_gibbs_sampler(
+    frr_samples <- fswr_gibbs_sampler(
       X,
       y,
       weights,
@@ -406,7 +411,7 @@ sim_function <- function(seed, n, weights) {
     )
 
     # run LSP with confidence = 1.0
-    cwr_samples <- fswr_gibbs_sampler(
+    fcr_samples <- fswr_gibbs_sampler(
       X,
       y,
       weights,
@@ -420,9 +425,9 @@ sim_function <- function(seed, n, weights) {
     metrics_list <- c(
       metrics_list,
       list(
-        "standard ss" = dssr_samples,
-        "random weights" = rvwr_samples,
-        "constant weights" = cwr_samples
+        "standard ss" = ftr_samples,
+        "random weights" = frr_samples,
+        "constant weights" = fcr_samples
       )
     )
   }
@@ -430,7 +435,7 @@ sim_function <- function(seed, n, weights) {
   # can also evaluate LSP with random sparsity
   if (random_s == TRUE) {
     # run spike and slab with random s, c = 0
-    srsr_samples <- rswr_gibbs_sampler(
+    ptr_samples <- rswr_gibbs_sampler(
       X,
       y,
       weights,
@@ -444,7 +449,7 @@ sim_function <- function(seed, n, weights) {
     )
 
     # run LSP with confidence = 0.5
-    rvsr_samples <- rswr_gibbs_sampler(
+    prr_samples <- rswr_gibbs_sampler(
       X,
       y,
       weights,
@@ -457,7 +462,7 @@ sim_function <- function(seed, n, weights) {
     )
 
     # run LSP with confidence = 1.0
-    csr_samples <- rswr_gibbs_sampler(
+    pcr_samples <- rswr_gibbs_sampler(
       X,
       y,
       weights,
@@ -472,9 +477,9 @@ sim_function <- function(seed, n, weights) {
     metrics_list <- c(
       metrics_list,
       list(
-        "standard ss, random s" = srsr_samples,
-        "random weights, random s" = rvsr_samples,
-        "constant weights, random s" = csr_samples
+        "standard ss, random s" = ptr_samples,
+        "random weights, random s" = prr_samples,
+        "constant weights, random s" = pcr_samples
       )
     )
   }

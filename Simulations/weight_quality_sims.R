@@ -1,5 +1,5 @@
 # R script for running simulations in LLM Sparsity Prior for Robust Feature Selection
-source("weight_quality_support.R")
+source("Simulations/weight_quality_support.R")
 
 # simulation settings -----------------------------------------------------
 
@@ -23,7 +23,7 @@ fixed_s <- TRUE
 phi_range <- c(0.5, 0.6, 0.7, 0.75, seq(0.8, 1.0, by = 0.01))
 
 total_cores <- parallel::detectCores(logical = FALSE)
-cores <- min(total_cores, 50)
+cores <- min(total_cores, 4)
 weight_confidence <- 0.5
 
 plan(multisession, workers = cores)
