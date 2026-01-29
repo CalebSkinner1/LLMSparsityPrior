@@ -1,8 +1,6 @@
-# large regression sims support functions
+# R script supplements weight_quality_sims.R to aid sampling
 
-# I'm placing all of these here so I only need to upload a few files to the group server
-
-# libraries ---------------------------------------------------------------
+# load libraries ------------------------------------------------------------
 
 suppressPackageStartupMessages({
   library("tidyverse")
@@ -21,7 +19,6 @@ l1_weight_agreement <- function(true_gamma, weights) {
   # l1 distance
   l1 <- mean(abs(true_gamma - scaled_weights))
 
-  # rescale entropy on 0 to 1 scale: "agreement"
   1 - l1
 }
 
@@ -32,7 +29,6 @@ l2_weight_agreement <- function(true_gamma, weights) {
   # l2 distance
   l2 <- mean((true_gamma - scaled_weights)^2)
 
-  # rescale entropy on 0 to 1 scale: "agreement"
   1 - l2
 }
 
@@ -119,11 +115,12 @@ generate_weights <- function(
   weights
 }
 
+# ex:
 # generate_weights(0.9, true_gamma) %>% l1_weight_agreement(true_gamma, .)
 # generate_weights(0.9, true_gamma) %>% l2_weight_agreement(true_gamma, .)
 # generate_weights(0.9, true_gamma) %>% pairwise_weight_agreement(true_gamma, .)
 
-# helper functions --------------------------------------------------------
+# helper functions for simulation --------------------------------------------------------
 
 compile_model_metrics <- function(model_object, weights, alpha, beta) {
   signal <- beta != 0
@@ -138,14 +135,15 @@ compile_model_metrics <- function(model_object, weights, alpha, beta) {
     l1 <- sum(abs(model_object$beta %>% colMeans() - c(alpha, beta))) # l1 loss of beta
   }
 
+  # compute metrics
   fp <- length(which(gamma_predict[!signal] > 0.5)) # false positives of MPM
   fn <- length(which(gamma_predict[signal] < 0.5)) # false negatives
   tp <- sum(signal) - fn # true positives
   tn <- sum(!signal) - fp # true negatives
-
   precision <- if_else(tp == 0, 0, tp / (tp + fp)) # precision
   recall <- if_else(tp == 0, 0, tp / (tp + fn)) # recall
 
+  # store metrics
   tibble(gamma_predict, weights, signal) %>%
     group_by(weights, signal) %>%
     summarize(coef_mean = mean(gamma_predict), .groups = "keep") %>%
@@ -166,297 +164,11 @@ compile_model_metrics <- function(model_object, weights, alpha, beta) {
     )
 }
 
-# summarize_sim <- function(sim) {
-#   map_dfr(sim, ~ bind_rows(.x) %>% colMeans()) %>%
-#     # also compute se
-#     as.data.frame() %>%
-#     mutate(type = names(sim)) %>%
-#     relocate(type)
-# }
-
-# Random s ----------------------------------------------------------------
-# compute model prior using stored values from hypergeometric function
-compute_model_prior <- function(gamma, stored_hg) {
-  gamma_0 <- sum(stored_hg$gamma_0[gamma == 0]) # sum of model prior for gamma_j = 0
-  gamma_1 <- sum(stored_hg$gamma_1[gamma == 1]) # sum of model prior for gamma_j = 1
-  gamma_0 + gamma_1
-}
-
-# compute posterior probability of gamma (Z is (1, X)), does not include some constants that will be cancelled in log_acceptance_rate
-fswr_log_posterior <- function(
-  Z,
-  Z_gram,
-  y,
-  tau,
-  gamma,
-  a_sigma,
-  b_sigma,
-  t,
-  p,
-  n
-) {
-  n_gam <- ncol(Z) # cardinality of selected design matrix
-
-  Q <- Z_gram + diag(n_gam) / tau
-  cholQ <- chol(Q)
-  log_detQ <- 2 * sum(log(diag(cholQ)))
-
-  # compute model prior
-  model_prior <- sum(gamma * log(t) + (1 - gamma) * log(1 - t))
-
-  n_gam /
-    2 *
-    log(tau) -
-    .5 * log_detQ -
-    (n / 2 + a_sigma) *
-      log(
-        sum(y^2) - crossprod(y, Z %*% chol2inv(cholQ) %*% t(Z)) %*% y + b_sigma
-      ) +
-    model_prior
-}
-
-# compute log acceptance rate: log(p(gamma_new|data)) - log(p(gamma_old|data))
-fswr_log_acceptance_rate <- function(
-  Z_old,
-  Z_old_gram,
-  Z_new,
-  Z_new_gram,
-  y,
-  gamma_new,
-  gamma_old,
-  tau,
-  a_sigma,
-  b_sigma,
-  t,
-  p,
-  n
-) {
-  fswr_log_posterior(
-    Z_new,
-    Z_new_gram,
-    y,
-    tau,
-    gamma_new,
-    a_sigma,
-    b_sigma,
-    t,
-    p,
-    n
-  ) -
-    fswr_log_posterior(
-      Z_old,
-      Z_old_gram,
-      y,
-      tau,
-      gamma_old,
-      a_sigma,
-      b_sigma,
-      t,
-      p,
-      n
-    )
-}
-
-# run discrete spike and slab sampler for regression. With confidence = 0, reduces to traditional spike and slab.
-# With confidence = 1, prior sparsity is entirely determined by the weights
-fswr_gibbs_sampler <- function(
-  X,
-  y,
-  weights = NA,
-  c = NA,
-  sparsity,
-  a_sigma,
-  b_sigma,
-  tau,
-  iter = 10000,
-  burn_in = 5000,
-  thin = 1,
-  prob_add = 1 / 3,
-  prob_delete = 1 / 3,
-  init_weights = TRUE
-) {
-  if (is.na(weights[1])) {
-    c <- 0 # if no weights, then clearly there is no confidence in them
-  }
-
-  p <- ncol(X)
-  n <- nrow(X)
-
-  if (c == 0) {
-    init_weights <- FALSE
-    t <- rep(sparsity, p)
-  } else {
-    # create vector for prior model probability
-    t <- sparsity * c * weights / mean(weights) + (1 - c) * sparsity
-  }
-
-  # number of models left after thinning/burn_in
-  n_keep <- ceiling((iter - burn_in) / thin)
-
-  # create space for gamma, beta, invsigma^2, acc
-  gam_list <- matrix(0, nrow = n_keep, ncol = p)
-  beta_list <- matrix(0, nrow = n_keep, ncol = p + 1)
-  invsigma_2_list <- rep(0, n_keep)
-  acc_list <- rep(0, n_keep)
-
-  # generate initial values of gamma (in a smart way)
-  gam_current <- rep(0, p)
-
-  if (init_weights) {
-    # initialize by taking largest p*sparsity weights from LLM
-    gam_current[order(weights, decreasing = TRUE)[
-      1:max(2, ceiling(sparsity * p))
-    ]] <- 1
-  } else {
-    # initialize by taking largest p*sparsity correlations with y (marginal correlation screening)
-    gam_current[order(abs(cor(X, y)), decreasing = TRUE)[
-      1:max(2, ceiling(sparsity * p))
-    ]] <- 1
-  }
-
-  beta_current <- glmnet::glmnet(
-    X[, which(gam_current == 1)],
-    y,
-    alpha = 0,
-    lambda = 1
-  ) %>%
-    coef() %>%
-    as.vector()
-  invsigma_2_current <- 1 /
-    (1 /
-      n *
-      sum((y - cbind(1, X[, which(gam_current == 1)]) %*% beta_current)^2))
-
-  # begin iterations
-  for (i in 1:iter) {
-    # propose a candidate gamma
-    gam_prop <- gam_current
-    selected_gam <- which(gam_prop == 1)
-    removed_gam <- which(gam_prop == 0)
-
-    Z_old <- cbind(1, X[, selected_gam])
-    Z_old_gram <- crossprod(Z_old)
-
-    # employ ADS random search to edit gam_prop
-    unif_gam <- runif(1)
-    if (length(selected_gam) == 0) {
-      unif_gam <- 0.5
-    } # ensure that if none are selected, we will add
-
-    log_prop_ratio <- 0
-    current_model_size <- sum(gam_prop)
-
-    # with prob_delete, randomly remove one gamma
-    if (unif_gam < prob_delete || length(removed_gam) == 0) {
-      chosen <- sample(selected_gam)[1]
-      gam_prop[chosen] <- 0
-      log_prop_ratio <- log(current_model_size) -
-        log(p - current_model_size + 1)
-    } else if (unif_gam < prob_delete + prob_add) {
-      # with prob_add, randomly add one gamma
-      chosen <- sample(removed_gam)[1]
-      gam_prop[chosen] <- 1
-      log_prop_ratio <- log(p - current_model_size) -
-        log(current_model_size + 1)
-    } else {
-      # else swap
-      chosen1 <- sample(removed_gam)[1]
-      chosen2 <- sample(selected_gam)[1]
-      gam_prop[chosen1] <- 1
-      gam_prop[chosen2] <- 0
-    }
-    selected_gam <- which(gam_prop == 1)
-
-    Z_new <- cbind(1, X[, selected_gam])
-    Z_new_gram <- crossprod(Z_new)
-
-    # compute log acceptance rate
-    logacc <- fswr_log_acceptance_rate(
-      Z_old,
-      Z_old_gram,
-      Z_new,
-      Z_new_gram,
-      y,
-      gam_prop,
-      gam_current,
-      tau,
-      a_sigma,
-      b_sigma,
-      t,
-      p,
-      n
-    ) +
-      log_prop_ratio
-    if (log(runif(1)) < logacc) {
-      # insert gamma draw
-      gam_current <- gam_prop
-
-      # draw beta vector
-      chol_mat <- chol(
-        invsigma_2_current *
-          Z_new_gram +
-          (invsigma_2_current / tau) * diag(ncol(Z_new_gram))
-      )
-      invQ <- chol2inv(chol_mat)
-      l <- invsigma_2_current * crossprod(Z_new, y)
-      beta_gamma <- MASS::mvrnorm(1, invQ %*% l, invQ)
-      beta_current <- rep(0, p + 1)
-      beta_current[c(1, selected_gam + 1)] <- beta_gamma
-
-      # draw invsigma_2
-      invsigma_2_current <- rgamma(
-        1,
-        shape = n / 2 + a_sigma,
-        rate = 1 / 2 * sum((y - Z_new %*% beta_gamma)^2) + b_sigma
-      )
-
-      # count acceptances
-      acc <- 1
-    } else {
-      # gam_current is maintained
-
-      # draw beta vector
-      chol_mat <- chol(
-        invsigma_2_current *
-          Z_old_gram +
-          (invsigma_2_current / tau) * diag(ncol(Z_old_gram))
-      )
-      invQ <- chol2inv(chol_mat)
-      l <- invsigma_2_current * crossprod(Z_old, y)
-      beta_gamma <- MASS::mvrnorm(1, invQ %*% l, invQ)
-      beta_current[c(1, which(gam_current == 1) + 1)] <- beta_gamma
-
-      # draw invsigma_2
-      invsigma_2_current <- rgamma(
-        1,
-        shape = n / 2 + a_sigma,
-        rate = 1 / 2 * sum((y - Z_old %*% beta_gamma)^2) + b_sigma
-      )
-
-      # count acceptances
-      acc <- 0
-    }
-
-    # store parameters
-    if (i > burn_in && (i - burn_in) %% thin == 0) {
-      store_i <- (i - burn_in) / thin # index
-
-      gam_list[store_i, ] <- gam_current
-      beta_list[store_i, ] <- beta_current
-      invsigma_2_list[store_i] <- invsigma_2_current
-      acc_list[store_i] <- acc
-    }
-  }
-
-  list(
-    "beta" = beta_list,
-    "gamma" = gam_list,
-    "invsigma_2" = invsigma_2_list,
-    "accs" = acc_list
-  )
-}
+# Fixed Sparsity ----------------------------------------------------------------
+source("MCMC Samplers/LSP_regression_fixed_s.R")
 
 # LLM-Lasso ---------------------------------------------------------------
+# code may be found at https://github.com/pilancilab/LLM-Lasso, lightly edited for functionality
 
 # Scale X_test with X_train's center/scale; guard zero-variance cols
 .scale_like_train <- function(X_train, X_new = NULL) {
@@ -639,7 +351,7 @@ llm_lasso_simp <- function(
 }
 
 # simulation function -----------------------------------------------------
-
+# this function runs the simulation
 sim_function <- function(seed, n, weights) {
   set.seed(seed)
   # generate X and coefficients
@@ -647,7 +359,7 @@ sim_function <- function(seed, n, weights) {
   beta <- c(rep(0, p - s), rep(effect_size, s))
   alpha <- effect_size
 
-  # y
+  # generate y
   y <- X %*% beta + alpha + rnorm(n, 0, sd = y_sd)
 
   # run lasso
@@ -681,7 +393,7 @@ sim_function <- function(seed, n, weights) {
       tau = tau
     )
 
-    # run spike and slab with random theta_j
+    # run LSP with confidence = 0.5
     rvwr_samples <- fswr_gibbs_sampler(
       X,
       y,
@@ -693,7 +405,7 @@ sim_function <- function(seed, n, weights) {
       tau = tau
     )
 
-    # run spike and slab with constant theta_j
+    # run LSP with confidence = 1.0
     cwr_samples <- fswr_gibbs_sampler(
       X,
       y,
@@ -715,6 +427,7 @@ sim_function <- function(seed, n, weights) {
     )
   }
 
+  # can also evaluate LSP with random sparsity
   if (random_s == TRUE) {
     # run spike and slab with random s, c = 0
     srsr_samples <- rswr_gibbs_sampler(
@@ -730,7 +443,7 @@ sim_function <- function(seed, n, weights) {
       init_weights = FALSE
     )
 
-    # run spike and slab with random s, c = .5
+    # run LSP with confidence = 0.5
     rvsr_samples <- rswr_gibbs_sampler(
       X,
       y,
@@ -743,7 +456,7 @@ sim_function <- function(seed, n, weights) {
       b_s = b_s
     )
 
-    # run spike and slab with random s, constant
+    # run LSP with confidence = 1.0
     csr_samples <- rswr_gibbs_sampler(
       X,
       y,

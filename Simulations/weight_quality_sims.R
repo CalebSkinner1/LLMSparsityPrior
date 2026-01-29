@@ -1,7 +1,5 @@
-# R script for using server to run simulations
-
-source("server_reg_support.R")
-# source("Simulations/Regression/server - use for multiple cores/server_reg_support.R")
+# R script for running simulations in LLM Sparsity Prior for Robust Feature Selection
+source("weight_quality_support.R")
 
 # simulation settings -----------------------------------------------------
 
@@ -20,6 +18,7 @@ tau <- 2
 sparsity <- 0.01
 random_s <- FALSE
 fixed_s <- TRUE
+
 # select grid of weight agreements to evaluate
 phi_range <- c(0.5, 0.6, 0.7, 0.75, seq(0.8, 1.0, by = 0.01))
 
@@ -31,13 +30,14 @@ plan(multisession, workers = cores)
 options(future.globals.maxSize = 2000 * 1024^2)
 
 # run simulations ----------------------------------------------------------
-for (phi in phi_range) {
+for (phi in phi_range) { # select weight quality phi
   message(str_c("starting simulations for phi = ", phi))
   weights <- generate_weights(phi, true_gamma)
   l1_agreement <- l1_weight_agreement(true_gamma, weights)
   l2_agreement <- l2_weight_agreement(true_gamma, weights)
   pairwise_agreement <- pairwise_weight_agreement(true_gamma, weights)
 
+  # select sample size n
   for (n in c(250, 500)) {
     message(str_c("running n = ", n, "..."))
     file_name <- paste0("weights", phi, "_n", n, ".csv")
