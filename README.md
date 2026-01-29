@@ -23,9 +23,14 @@ This repository is organized to support three primary objectives:
 ```
 
 ## Installation and Dependencies
-The MCMC samplers and simulations are written in R. To run these, please be sure the following packages are installed:
+The core method and simulation scripts are written in R. To run these, be sure the following packages are installed:
 ```{r}
 install.packages(c("MASS", "tidyverse", "hypergeo", "glmnet", "parallel", "furrr"))
+```
+
+The clinical data application is implemented in Python. Dependencies can be installed via:
+```{bash}
+.pip install -r ...
 ```
 
 ## Usage Example
