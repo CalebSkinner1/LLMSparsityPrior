@@ -26,15 +26,34 @@ The MCMC samplers and simulations are written in R. To run these, please be sure
 install.packages(c("MASS", "tidyverse", "hypergeo", "glmnet", "parallel", "furrr"))
 ```
 
-## MCMC Samplers
-We provide code for both the fixed and random sparsity variations of the LLM Sparsity Prior. The MCMC Sampler for fixed sparsity is a Gibbs Sampler with a single Add-Delete-Swap (Metropolis Hastings) step for model selection.
-The random sparsity is similar, but with an added Metropolis Hastings Step for estimating the sparsity parameter $s$.
+## Usage Example
+```{r}
+source("LSP_regression_fixed_s.R")
 
-## Simulations
-Simulations may be generated at weight_quality_sims.R with parameters adjusted at the top of the file. Helper functions are located in weight_quality_support.R to faciliate readability.
+# Generate synthetic data
+n <- 100; p <- 100; signals <- 5
 
-## AKI
-The AKI data application necessitates two important files: Prompt_Engineering and End_to_End_Analysis. Prompt Engineering details the specific phrases used to prompt the LLM,
-while the End to End Analysis contains data preprocessing and analysis for the paper.
+X <- MASS::mvrnorm(n, mu = rep(0, p), diag(p))
+beta_true <- c(rep(0, p - s), rep(1, s))
+alpha_true <- 1
+y <- X %*% beta_true + alpha_true + rnorm(n, 0, sd = 1)
+
+# Define LLM-generated feature weights (in practice, these come from the LLM prompt)
+weights <- sample(1:5, p, replace = TRUE)
+
+# Run Sampler
+fit <- lsp_fixed_gibbs_sampler(
+  X = X,
+  y = y,
+  weights = weights,
+  c = 1,
+  sparsity = 0.05,
+  a_sigma = 1,
+  a_sigma = 1,
+  tau = 1)
+
+# Extract Posterior Means, etc.
+beta_est <- colMeans(fit$beta)
+```
 
 
