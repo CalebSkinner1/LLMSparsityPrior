@@ -35,7 +35,7 @@ The clinical data application is implemented in Python. Dependencies can be inst
 
 ## Usage Example
 ```{r}
-source("LSP_regression_fixed_s.R")
+source("MCMC Samplers/LSP_regression_fixed_s.R")
 
 # Generate synthetic data
 n <- 100; p <- 100; signals <- 5
