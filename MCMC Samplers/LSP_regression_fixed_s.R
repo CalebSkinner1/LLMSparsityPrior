@@ -3,7 +3,7 @@
 
 # computes unnormalized log-posterior density (marginalizing out beta and sigma)
 # (Z is (1, X)), does not include some constants that are cancelled in log_acceptance_rate
-fswr_log_posterior <- function(
+lsp_fixed_log_posterior <- function(
   Z,
   Z_gram,
   y,
@@ -35,7 +35,7 @@ fswr_log_posterior <- function(
 }
 
 # compute log acceptance rate: log(p(gamma_new|data)) - log(p(gamma_old|data))
-fswr_log_acceptance_rate <- function(
+lsp_fixed_log_acceptance_rate <- function(
   Z_old,
   Z_old_gram,
   Z_new,
@@ -49,7 +49,7 @@ fswr_log_acceptance_rate <- function(
   t,
   n
 ) {
-  fswr_log_posterior(
+  lsp_fixed_log_posterior(
     Z_new,
     Z_new_gram,
     y,
@@ -60,7 +60,7 @@ fswr_log_acceptance_rate <- function(
     t,
     n
   ) -
-    fswr_log_posterior(
+    lsp_fixed_log_posterior(
       Z_old,
       Z_old_gram,
       y,
@@ -75,8 +75,7 @@ fswr_log_acceptance_rate <- function(
 
 # run discrete spike and slab sampler for regression. With confidence = 0, reduces to traditional spike and slab.
 # With confidence = 1, prior sparsity is entirely determined by the weights
-# fswr (fixed sparsity weights regression)
-fswr_gibbs_sampler <- function(
+lsp_fixed_gibbs_sampler <- function(
   X,
   y,
   weights = NULL,
@@ -188,7 +187,7 @@ fswr_gibbs_sampler <- function(
     Z_new_gram <- crossprod(Z_new)
 
     # compute log acceptance rate
-    logacc <- fswr_log_acceptance_rate(
+    logacc <- lsp_fixed_log_acceptance_rate(
       Z_old,
       Z_old_gram,
       Z_new,

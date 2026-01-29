@@ -13,8 +13,7 @@ compute_log_prior_gamma <- function(gamma, s, u) {
 
 # compute unnormalized log-posterior density (marginalizing out beta and sigma)
 # (Z is (1, X)), does not include some constants that will be cancelled in log_acceptance_rate
-# rswr (random sparsity weights regression)
-rswr_log_posterior <- function(
+lsp_random_log_posterior <- function(
   Z,
   Z_gram,
   y,
@@ -46,7 +45,7 @@ rswr_log_posterior <- function(
 }
 
 # compute log acceptance rate: log(p(gamma_new|data)) - log(p(gamma_old|data))
-rswr_log_acceptance_rate <- function(
+lsp_random_log_acceptance_rate <- function(
   Z_old,
   Z_old_gram,
   Z_new,
@@ -61,7 +60,7 @@ rswr_log_acceptance_rate <- function(
   u,
   n
 ) {
-  rswr_log_posterior(
+  lsp_random_log_posterior(
     Z_new,
     Z_new_gram,
     y,
@@ -73,7 +72,7 @@ rswr_log_acceptance_rate <- function(
     u,
     n
   ) -
-    rswr_log_posterior(
+    lsp_random_log_posterior(
       Z_old,
       Z_old_gram,
       y,
@@ -87,7 +86,7 @@ rswr_log_acceptance_rate <- function(
     )
 }
 
-rswr_gibbs_sampler <- function(
+lsp_random_gibbs_sampler <- function(
   X,
   y,
   weights = NULL,
@@ -207,7 +206,7 @@ rswr_gibbs_sampler <- function(
     Z_new_gram <- crossprod(Z_new)
 
     # compute log acceptance rate
-    logacc <- rswr_log_acceptance_rate(
+    logacc <- lsp_random_log_acceptance_rate(
       Z_old,
       Z_old_gram,
       Z_new,
