@@ -7,12 +7,24 @@ This repository is organized to support three primary objectives:
 2) Simulations: Code to replicate the comparative simulation studies presented in the paper.
 3) Data Application: Prompt engineering templates and analysis code for the Acute Kidney Injury (AKI) application.
 
-## Installation and Dependencies
-The MCMC samplers are written in R and require no packages beyond base R. To run the simulations, please be sure the following packages are installed:
-```{r}
-install.packages(c("tidyverse", "hypergeo", "glmnet", "parallel", "furrr")
-```
+## Repository Structure
+.
+├── MCMC Samplers/
+│   ├── LSP_regression_fixed_s.R             # MCMC Sampler for Fixed Sparsity
+│   └── LSP_regression_random_s.R            # MCMC Sampler for Random Sparsity
+├── Simulations/
+│   ├── weight_quality_sims.R     # Main script to run simulations
+│   └── weight_quality_support.R  # Support functions for weight generation, metric computation, etc.
+├── AKI Data Application/
+│   ├── Prompt_Engineering.ipynb    # Exact prompts used for GPT-4o
+│   └── End_to_End_Analysis.ipynb   # Preprocessing and model fitting pipeline
+└── README.md
 
+## Installation and Dependencies
+The MCMC samplers and simulations are written in R. To run these, please be sure the following packages are installed:
+```{r}
+install.packages(c("MASS", "tidyverse", "hypergeo", "glmnet", "parallel", "furrr"))
+```
 
 ## MCMC Samplers
 We provide code for both the fixed and random sparsity variations of the LLM Sparsity Prior. The MCMC Sampler for fixed sparsity is a Gibbs Sampler with a single Add-Delete-Swap (Metropolis Hastings) step for model selection.
