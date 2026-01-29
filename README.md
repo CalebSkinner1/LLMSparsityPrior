@@ -28,11 +28,6 @@ The core method and simulation scripts are written in R. To run these, be sure t
 install.packages(c("MASS", "tidyverse", "hypergeo", "glmnet", "parallel", "furrr"))
 ```
 
-The clinical data application is implemented in Python. Dependencies can be installed via:
-```{bash}
-.pip install -r ...
-```
-
 ## Usage Example
 ```{r}
 source("MCMC Samplers/LSP_regression_fixed_s.R")
