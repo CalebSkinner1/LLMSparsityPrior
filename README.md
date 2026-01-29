@@ -8,7 +8,7 @@ This repository is organized to support three primary objectives:
 3) Data Application: Prompt engineering templates and analysis code for the Acute Kidney Injury (AKI) application.
 
 ## Repository Structure
-.
+```{text}
 ├── MCMC Samplers/
 │   ├── LSP_regression_fixed_s.R             # MCMC Sampler for Fixed Sparsity
 │   └── LSP_regression_random_s.R            # MCMC Sampler for Random Sparsity
@@ -19,6 +19,7 @@ This repository is organized to support three primary objectives:
 │   ├── Prompt_Engineering.ipynb    # Exact prompts used for GPT-4o
 │   └── End_to_End_Analysis.ipynb   # Preprocessing and model fitting pipeline
 └── README.md
+```
 
 ## Installation and Dependencies
 The MCMC samplers and simulations are written in R. To run these, please be sure the following packages are installed:
