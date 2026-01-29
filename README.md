@@ -9,6 +9,7 @@ This repository is organized to support three primary objectives:
 
 ## Repository Structure
 ```{text}
+.
 ├── MCMC Samplers/
 │   ├── LSP_regression_fixed_s.R             # MCMC Sampler for Fixed Sparsity
 │   └── LSP_regression_random_s.R            # MCMC Sampler for Random Sparsity
