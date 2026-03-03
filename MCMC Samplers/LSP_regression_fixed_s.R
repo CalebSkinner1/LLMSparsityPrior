@@ -106,7 +106,7 @@ lsp_fixed_gibbs_sampler <- function(
     t <- sparsity * c * weights / mean(weights) + (1 - c) * sparsity
   }
 
-  # number of models left after thinning/burn_in
+  # number of iter left after thinning/burn_in
   n_keep <- ceiling((iter - burn_in) / thin)
 
   # create space for gamma, beta, invsigma^2, acc
