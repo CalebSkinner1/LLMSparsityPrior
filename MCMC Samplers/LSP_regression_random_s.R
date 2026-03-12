@@ -96,6 +96,7 @@ lsp_random_gibbs_sampler <- function(
   tau,
   a_s = 1,
   b_s = NA,
+  s_proposal_sigma = 1,
   iter = 10000,
   burn_in = 5000,
   thin = 1,
@@ -120,17 +121,18 @@ lsp_random_gibbs_sampler <- function(
 
   # per recommendation of rockova-george
   if (is.na(b_s)) {
-    b_s <- p / 10
+    b_s <- p
   }
 
   # number of models left after thinning/burn_in
   n_keep <- ceiling((iter - burn_in) / thin)
 
   # create space for gamma, beta, invsigma^2, acc
-  gam_list <- matrix(0, nrow = n_keep, ncol = p)
-  beta_list <- matrix(0, nrow = n_keep, ncol = p + 1)
-  invsigma_2_list <- rep(0, n_keep)
-  acc_list <- rep(0, n_keep)
+  gam_store <- matrix(0, nrow = n_keep, ncol = p)
+  beta_store <- matrix(0, nrow = n_keep, ncol = p + 1)
+  invsigma_2_store <- rep(0, n_keep)
+  acc_store <- rep(0, n_keep)
+  acc_s_store <- rep(0, n_keep)
 
   # generate initial values of gamma, s, sigma^2 (in a smart way)
   gam_current <- rep(0, p)
@@ -275,8 +277,7 @@ lsp_random_gibbs_sampler <- function(
 
     # draw new s via random walk on logit scale
     logit_s <- log(s_current / (1 - s_current))
-    proposal_sigma <- 0.5
-    logit_s_new <- rnorm(1, mean = logit_s, sd = proposal_sigma)
+    logit_s_new <- rnorm(1, mean = logit_s, sd = s_proposal_sigma)
     s_new <- 1 / (1 + exp(-logit_s_new))
 
     if (max(s_new * u) >= 1) {
@@ -309,17 +310,19 @@ lsp_random_gibbs_sampler <- function(
     if (i > burn_in && (i - burn_in) %% thin == 0) {
       store_i <- (i - burn_in) / thin # index
 
-      gam_list[store_i, ] <- gam_current
-      beta_list[store_i, ] <- beta_current
-      invsigma_2_list[store_i] <- invsigma_2_current
-      acc_list[store_i] <- acc
+      gam_store[store_i, ] <- gam_current
+      beta_store[store_i, ] <- beta_current
+      invsigma_2_store[store_i] <- invsigma_2_current
+      acc_store[store_i] <- acc
+      acc_s_store[store_i] <- accept_s
     }
   }
 
   list(
-    "beta" = beta_list,
-    "gamma" = gam_list,
-    "invsigma_2" = invsigma_2_list,
-    "accs" = acc_list
+    "beta" = beta_store,
+    "gamma" = gam_store,
+    "invsigma_2" = invsigma_2_store,
+    "accs" = acc_store,
+    "acc_s" = acc_s_store
   )
 }
