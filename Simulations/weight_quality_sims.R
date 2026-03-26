@@ -36,7 +36,8 @@ for (phi in phi_range) { # select weight quality phi
   l1_agreement <- l1_weight_agreement(true_gamma, weights)
   l2_agreement <- l2_weight_agreement(true_gamma, weights)
   pairwise_agreement <- pairwise_weight_agreement(true_gamma, weights)
-
+  roc_agreement <- ROC_weight_agreement(true_gamma, weights)
+  
   # select sample size n
   for (n in c(250, 500)) {
     message(str_c("running n = ", n, "..."))

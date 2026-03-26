@@ -53,6 +53,15 @@ pairwise_weight_agreement <- function(true_gamma, weights) {
   percent_agreement
 }
 
+ROC_weight_agreement <- function(true_gamma, weights){
+  scaled_weights <- (weights - min(weights)) / (max(weights) - min(weights))
+
+  ROC <- pROC::roc(true_gamma, scaled_weights, levels = c("0", "1"), direction = "<")
+  auc_value <- pROC::auc(ROC)
+
+  auc_value[1]
+}
+
 # generate weights (takes in l1 distance weight agreement and returns weights)
 generate_weights <- function(
   phi, # weight agreement for l1 distance
@@ -164,8 +173,9 @@ compile_model_metrics <- function(model_object, weights, alpha, beta) {
     )
 }
 
-# Fixed Sparsity ----------------------------------------------------------------
+# Load MCMC Samplers ----------------------------------------------------------------
 source("MCMC Samplers/LSP_regression_fixed_s.R")
+source("MCMC Samplers/LSP_regression_random_s.R")
 
 # LLM-Lasso ---------------------------------------------------------------
 # code may be found at https://github.com/pilancilab/LLM-Lasso, lightly edited for functionality
@@ -388,7 +398,7 @@ sim_function <- function(seed, n, weights) {
     # third letter is r for regression, c for classification
     
     # run standard discrete spike and slab
-    ftr_samples <- fswr_gibbs_sampler(
+    ftr_samples <- lsp_fixed_gibbs_sampler(
       X,
       y,
       c = 0,
@@ -399,24 +409,26 @@ sim_function <- function(seed, n, weights) {
     )
 
     # run LSP with confidence = 0.5
-    frr_samples <- fswr_gibbs_sampler(
+    frr_samples <- lsp_fixed_gibbs_sampler(
       X,
       y,
       weights,
       sparsity = sparsity,
       c = weight_confidence,
+      eta = 1,
       a_sigma = a_sigma,
       b_sigma = b_sigma,
       tau = tau
     )
 
     # run LSP with confidence = 1.0
-    fcr_samples <- fswr_gibbs_sampler(
+    fcr_samples <- lsp_fixed_gibbs_sampler(
       X,
       y,
       weights,
       sparsity = sparsity,
       c = 1,
+      eta = 1,
       a_sigma = a_sigma,
       b_sigma = b_sigma,
       tau = tau
@@ -435,7 +447,7 @@ sim_function <- function(seed, n, weights) {
   # can also evaluate LSP with random sparsity
   if (random_s == TRUE) {
     # run spike and slab with random s, c = 0
-    ptr_samples <- rswr_gibbs_sampler(
+    ptr_samples <- lsp_random_gibbs_sampler(
       X,
       y,
       weights,
@@ -449,11 +461,12 @@ sim_function <- function(seed, n, weights) {
     )
 
     # run LSP with confidence = 0.5
-    prr_samples <- rswr_gibbs_sampler(
+    prr_samples <- lsp_random_gibbs_sampler(
       X,
       y,
       weights,
       c = weight_confidence,
+      eta = 1,
       a_sigma = a_sigma,
       b_sigma = b_sigma,
       tau = tau,
@@ -462,11 +475,12 @@ sim_function <- function(seed, n, weights) {
     )
 
     # run LSP with confidence = 1.0
-    pcr_samples <- rswr_gibbs_sampler(
+    pcr_samples <- lsp_random_gibbs_sampler(
       X,
       y,
       weights,
       c = 1,
+      eta = 1,
       a_sigma = a_sigma,
       b_sigma = b_sigma,
       tau = tau,
