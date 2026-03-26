@@ -49,6 +49,7 @@ fit <- lsp_fixed_gibbs_sampler(
   y = y,
   weights = weights,
   c = 1,
+  eta = 1,
   sparsity = 0.05,
   a_sigma = 1,
   b_sigma = 1,
