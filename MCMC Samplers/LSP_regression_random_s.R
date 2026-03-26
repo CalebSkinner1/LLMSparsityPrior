@@ -91,6 +91,7 @@ lsp_random_gibbs_sampler <- function(
   y,
   weights = NULL,
   c = NA,
+  eta = 0,
   a_sigma,
   b_sigma,
   tau,
@@ -102,7 +103,8 @@ lsp_random_gibbs_sampler <- function(
   thin = 1,
   prob_add = 1 / 3,
   prob_delete = 1 / 3,
-  init_weights = TRUE
+  init_weights = TRUE,
+  return_samples = TRUE
 ) {
   if (is.null(weights)) {
     c <- 0 # if no weights, then clearly there is no confidence in them
@@ -116,7 +118,7 @@ lsp_random_gibbs_sampler <- function(
     init_weights <- FALSE
   } else {
     # create vector for prior model probability
-    u <- c * weights / mean(weights) + (1 - c)
+    u <- c * (weights^eta) / mean((weights^eta)) + (1 - c)
   }
 
   # per recommendation of rockova-george
@@ -127,12 +129,21 @@ lsp_random_gibbs_sampler <- function(
   # number of models left after thinning/burn_in
   n_keep <- ceiling((iter - burn_in) / thin)
 
-  # create space for gamma, beta, invsigma^2, acc
-  gam_store <- matrix(0, nrow = n_keep, ncol = p)
-  beta_store <- matrix(0, nrow = n_keep, ncol = p + 1)
-  invsigma_2_store <- rep(0, n_keep)
-  acc_store <- rep(0, n_keep)
-  acc_s_store <- rep(0, n_keep)
+  if(return_samples){
+    # create space for gamma, beta, invsigma^2, acc
+    gam_store <- matrix(0, nrow = n_keep, ncol = p)
+    beta_store <- matrix(0, nrow = n_keep, ncol = p + 1)
+    invsigma_2_store <- rep(0, n_keep)
+    acc_store <- rep(0, n_keep)
+    acc_s_store <- rep(0, n_keep)
+  } else{
+    # reduction for memory: only store means
+    gam_mean <- rep(0, p)
+    beta_mean <- rep(0, p + 1)
+    invsigma_2_mean <- 0
+    acc_mean <- 0
+    acc_s_store <- 0
+  }
 
   # generate initial values of gamma, s, sigma^2 (in a smart way)
   gam_current <- rep(0, p)
@@ -305,24 +316,39 @@ lsp_random_gibbs_sampler <- function(
         accept_s <- FALSE
       }
     }
-
     # store parameters
     if (i > burn_in && (i - burn_in) %% thin == 0) {
-      store_i <- (i - burn_in) / thin # index
+      if(return_samples){
+        store_i <- (i - burn_in) / thin # index
 
-      gam_store[store_i, ] <- gam_current
-      beta_store[store_i, ] <- beta_current
-      invsigma_2_store[store_i] <- invsigma_2_current
-      acc_store[store_i] <- acc
-      acc_s_store[store_i] <- accept_s
+        gam_store[store_i, ] <- gam_current
+        beta_store[store_i, ] <- beta_current
+        invsigma_2_store[store_i] <- invsigma_2_current
+        acc_store[store_i] <- acc
+        acc_s_store[store_i] <- accept_s
+      }else{
+        gam_mean <- gam_mean + gam_current/n_keep
+        beta_mean <- beta_mean + beta_current/n_keep
+        invsigma_2_mean <- invsigma_2_mean + invsigma_2_current/n_keep
+        acc_mean <- acc_mean + acc/n_keep
+        acc_s_mean <- acc_s_mean + accept_s/n_keep
+      }
     }
   }
 
-  list(
-    "beta" = beta_store,
-    "gamma" = gam_store,
-    "invsigma_2" = invsigma_2_store,
-    "accs" = acc_store,
-    "acc_s" = acc_s_store
-  )
+  if(return_samples){
+    list(
+      "beta" = beta_store,
+      "gamma" = gam_store,
+      "invsigma_2" = invsigma_2_store,
+      "accs" = acc_store,
+      "acc_s" = acc_s_store)
+  }else{
+    list(
+      "beta" = beta_mean,
+      "gamma" = gam_mean,
+      "invsigma_2" = invsigma_2_mean,
+      "accs" = acc_mean,
+      "acc_s" = acc_s_mean)
+  }
 }
