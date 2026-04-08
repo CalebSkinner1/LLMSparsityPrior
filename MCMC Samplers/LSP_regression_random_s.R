@@ -3,7 +3,7 @@
 
 # compute model prior conditional on s
 compute_log_prior_gamma <- function(gamma, s, u) {
-  theta <- s * u # compute theta vector
+  theta <- pmax(1e-10, pmin(s * u, 1 - 1e-10)) # compute theta vector
 
   # compute log probability of gamma conditional on s
   log_prob <- sum(gamma * log(theta) + (1 - gamma) * log(1 - theta))
@@ -34,11 +34,11 @@ lsp_random_log_posterior <- function(
   model_prior <- compute_log_prior_gamma(gamma, s, u)
 
   y_Z <- crossprod(Z, y)
-  quadratic_term <- t(y_Z) %*% chol2inv(cholQ) %*% y_Z
+  quadratic_term <- as.numeric(t(y_Z) %*% chol2inv(cholQ) %*% y_Z)
 
-  n_gam /2 *log(tau) - .5 * log_detQ -
-    (n / 2 + a_sigma) *
-      log(sum(y^2) - quadratic_term + b_sigma) +
+  n_gam / 2 * log(tau) -
+    .5 * log_detQ -
+    (n / 2 + a_sigma) * log(.5*(sum(y^2) - quadratic_term) + b_sigma) +
     model_prior
 }
 
@@ -266,7 +266,7 @@ lsp_random_gibbs_sampler <- function(
       n
     ) +
       log_prop_ratio
-    if (log(runif(1)) < logacc[[1]]) {
+    if (log(runif(1)) < logacc) {
       # insert gamma draw
       gam_current <- gam_prop
 
@@ -363,14 +363,15 @@ lsp_random_gibbs_sampler <- function(
 
     # store parameters
     if (i > burn_in && (i - burn_in) %% thin == 0) {
+      c_val <- cross_eta_c$c[c_eta_idx_current]
       if(return_samples){
         store_i <- (i - burn_in) / thin # index
 
         gam_store[store_i, ] <- gam_current
         beta_store[store_i, ] <- beta_current
         invsigma_2_store[store_i] <- invsigma_2_current
-        eta_store[store_i] <- cross_eta_c$eta[c_eta_idx_current]
-        c_store[store_i] <- cross_eta_c$c[c_eta_idx_current]
+        c_store[store_i] <- c_val
+        eta_store[store_i] <- if (c_val == 0) 0 else cross_eta_c$eta[c_eta_idx_current]
         s_store[store_i] <- s_current
         acc_store[store_i] <- acc
         acc_s_store[store_i] <- accept_s
@@ -378,8 +379,8 @@ lsp_random_gibbs_sampler <- function(
         gam_mean <- gam_mean + gam_current/n_keep
         beta_mean <- beta_mean + beta_current/n_keep
         invsigma_2_mean <- invsigma_2_mean + invsigma_2_current/n_keep
-        eta_mean <- eta_mean + cross_eta_c$eta[c_eta_idx_current]/n_keep
-        c_mean <- c_mean + cross_eta_c$c[c_eta_idx_current]/n_keep
+        c_mean <- c_mean + c_val/n_keep
+        eta_mean <- if(c_val == 0) eta_mean else eta_mean + cross_eta_c$eta[c_eta_idx_current]/n_keep
         s_mean <- s_mean + s_current/n_keep
         acc_mean <- acc_mean + acc/n_keep
         acc_s_mean <- acc_s_mean + accept_s/n_keep
