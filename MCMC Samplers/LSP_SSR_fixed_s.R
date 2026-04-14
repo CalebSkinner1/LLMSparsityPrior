@@ -3,7 +3,7 @@
 
 # computes unnormalized log-posterior density (marginalizing out beta and sigma)
 # (Z is (1, X)), does not include some constants that are cancelled in log_acceptance_rate
-lsp_fixed_log_posterior <- function(
+lsp_fixed_ss_log_posterior <- function(
   Z,
   Z_gram,
   y,
@@ -33,7 +33,7 @@ lsp_fixed_log_posterior <- function(
 }
 
 # compute log acceptance rate: log(p(gamma_new|data)) - log(p(gamma_old|data))
-lsp_fixed_log_acceptance_rate <- function(
+lsp_fixed_ss_log_acceptance_rate <- function(
   Z_old,
   Z_old_gram,
   Z_new,
@@ -47,7 +47,7 @@ lsp_fixed_log_acceptance_rate <- function(
   theta,
   n
 ) {
-  lsp_fixed_log_posterior(
+  lsp_fixed_ss_log_posterior(
     Z_new,
     Z_new_gram,
     y,
@@ -58,7 +58,7 @@ lsp_fixed_log_acceptance_rate <- function(
     theta,
     n
   ) -
-    lsp_fixed_log_posterior(
+    lsp_fixed_ss_log_posterior(
       Z_old,
       Z_old_gram,
       y,
@@ -73,7 +73,7 @@ lsp_fixed_log_acceptance_rate <- function(
 
 # run discrete spike and slab sampler for regression. With confidence = 0, reduces to traditional spike and slab.
 # With confidence = 1, prior sparsity is entirely determined by the weights
-lsp_fixed_gibbs_sampler <- function(
+lsp_fixed_ss_gibbs_sampler <- function(
   X,
   y,
   weights = NULL,
@@ -112,7 +112,13 @@ lsp_fixed_gibbs_sampler <- function(
   if (length(c) == 1 & length(eta) == 1) {
     if(eta == 0 | c == 0){ 
       init_weights <- FALSE
-      theta_mat[1,] <- rep(sparsity, p)
+      if(length(sparsity) == 1){
+        theta_mat[1,] <- rep(sparsity, p)
+      }else{
+        # insert inclusion probabilities directly
+        theta_mat[1,] <- sparsity
+      }
+      
     }else{
       # create vector for prior model probability
       raw_theta <- sparsity * c * (weights^eta) / mean(weights^eta) + (1 - c) * sparsity
@@ -233,7 +239,7 @@ lsp_fixed_gibbs_sampler <- function(
     Z_new_gram <- crossprod(Z_new)
 
     # compute log acceptance rate
-    logacc <- lsp_fixed_log_acceptance_rate(
+    logacc <- lsp_fixed_ss_log_acceptance_rate(
       Z_old,
       Z_old_gram,
       Z_new,
