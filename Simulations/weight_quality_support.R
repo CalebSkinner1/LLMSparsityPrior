@@ -53,10 +53,15 @@ pairwise_weight_agreement <- function(true_gamma, weights) {
   percent_agreement
 }
 
-ROC_weight_agreement <- function(true_gamma, weights){
+ROC_weight_agreement <- function(true_gamma, weights) {
   scaled_weights <- (weights - min(weights)) / (max(weights) - min(weights))
 
-  ROC <- pROC::roc(true_gamma, scaled_weights, levels = c("0", "1"), direction = "<")
+  ROC <- pROC::roc(
+    true_gamma,
+    scaled_weights,
+    levels = c("0", "1"),
+    direction = "<"
+  )
   auc_value <- pROC::auc(ROC)
 
   auc_value[1]
@@ -65,23 +70,27 @@ ROC_weight_agreement <- function(true_gamma, weights){
 # generate weights (takes in l1 distance weight agreement and returns weights)
 generate_weights <- function(
   phi, # weight agreement for l1 distance
-  true_gamma
+  true_gamma,
+  categories = 5
 ) {
   if (phi == 1) {
-    weight_prop <- c(1, 0, 0, 0)
+    weight_prop <- c(1, rep(0, categories - 1))
   } else {
-    mu <- 3 * (1 - phi)
+    mu <- (categories - 1) * (1 - phi)
     # solve for ratio (geometric difference between weight proportions)
     f <- function(r) {
-      (3 - mu) * r^3 + (2 - mu) * r^2 + (1 - mu) * r - mu
+      k <- 1:(categories - 1)
+      sum((k - mu) * r^k) - mu
     }
 
     solution <- uniroot(f, interval = c(0, 1))
     r <- solution$root
-    c <- mu / (r + 2 * r^2 + 3 * r^3)
+
+    k <- 1:(categories - 1)
+    c <- mu / sum(k * r^k)
 
     # proportion of weights that are (correct, 1 off, 2 off, 3 off)
-    weight_prop <- c(c, c * r, c * r^2, c * r^3)
+    weight_prop <- c * (r^(0:(categories - 1)))
   }
 
   # noise (inactive) covariates
@@ -97,7 +106,7 @@ generate_weights <- function(
   }
 
   weights_0 <- rep(
-    1 + seq_along(counts_0),
+    seq_along(counts_0),
     times = round(counts_0)
   )
 
@@ -114,7 +123,7 @@ generate_weights <- function(
   }
 
   weights_1 <- rep(
-    6 - seq_along(counts_1),
+    (categories + 1) - seq_along(counts_1),
     times = round(counts_1)
   )
   weights <- numeric(length(true_gamma))
@@ -194,7 +203,9 @@ lsp_fixed_log_posterior <- function(
   y_Z <- crossprod(Z, y)
   quadratic_term <- t(y_Z) %*% chol2inv(cholQ) %*% y_Z
 
-  n_gam / 2 * log(tau) -
+  n_gam /
+    2 *
+    log(tau) -
     .5 * log_detQ -
     (n / 2 + a_sigma) * log(sum(y^2) - quadratic_term + b_sigma) +
     model_prior
@@ -268,7 +279,7 @@ lsp_fixed_gibbs_sampler <- function(
   n <- nrow(X)
 
   # number of values of eta and c in grid
-  K <- length(c)*length(eta)
+  K <- length(c) * length(eta)
 
   # all c, eta values
   cross_eta_c <- expand.grid(eta = eta, c = c)
@@ -278,33 +289,42 @@ lsp_fixed_gibbs_sampler <- function(
 
   # eta and c are fixed
   if (length(c) == 1 & length(eta) == 1) {
-    if(eta == 0 | c == 0){ 
+    if (eta == 0 | c == 0) {
       init_weights <- FALSE
-      theta_mat[1,] <- rep(sparsity, p)
-    }else{
+      theta_mat[1, ] <- rep(sparsity, p)
+    } else {
       # create vector for prior model probability
-      raw_theta <- sparsity * c * (weights^eta) / mean(weights^eta) + (1 - c) * sparsity
+      raw_theta <- sparsity *
+        c *
+        (weights^eta) /
+        mean(weights^eta) +
+        (1 - c) * sparsity
 
-      theta_mat[1,] <- pmin(pmax(raw_theta, 1e-4), 1 - 1e-4)
+      theta_mat[1, ] <- pmin(pmax(raw_theta, 1e-4), 1 - 1e-4)
     }
-  } else { # eta and c are random
-      for(k in 1:nrow(cross_eta_c)){
-        c_k <- cross_eta_c$c[k]
-        eta_k <- cross_eta_c$eta[k]
+  } else {
+    # eta and c are random
+    for (k in 1:nrow(cross_eta_c)) {
+      c_k <- cross_eta_c$c[k]
+      eta_k <- cross_eta_c$eta[k]
 
-        raw_theta <- sparsity * c_k * (weights^eta_k) /mean((weights^eta_k)) + (1 - c_k) * sparsity
+      raw_theta <- sparsity *
+        c_k *
+        (weights^eta_k) /
+        mean((weights^eta_k)) +
+        (1 - c_k) * sparsity
 
-        # constrain theta to be less than 1
-        capped_theta <- pmin(pmax(raw_theta, 1e-4), 1 - 1e-4)
+      # constrain theta to be less than 1
+      capped_theta <- pmin(pmax(raw_theta, 1e-4), 1 - 1e-4)
 
-        theta_mat[k, ] <- capped_theta        
-      }
+      theta_mat[k, ] <- capped_theta
     }
+  }
 
   # number of iter left after thinning/burn_in
   n_keep <- ceiling((iter - burn_in) / thin)
 
-  if(return_samples){
+  if (return_samples) {
     # create space for gamma, beta, invsigma^2, acc
     gam_store <- matrix(0, nrow = n_keep, ncol = p)
     beta_store <- matrix(0, nrow = n_keep, ncol = p + 1)
@@ -312,7 +332,7 @@ lsp_fixed_gibbs_sampler <- function(
     acc_store <- rep(0, n_keep)
     eta_store <- rep(0, n_keep)
     c_store <- rep(0, n_keep)
-  } else{
+  } else {
     # reduction for memory: only store means
     gam_mean <- rep(0, p)
     beta_mean <- rep(0, p + 1)
@@ -349,14 +369,14 @@ lsp_fixed_gibbs_sampler <- function(
     (1 /
       n *
       sum((y - cbind(1, X[, which(gam_current == 1)]) %*% beta_current)^2))
-  
+
   # find current index of eta and c in discrete uniform grid
-  if(K > 1){
+  if (K > 1) {
     c_eta_idx_current <- sample(K, 1)
-  }else{
+  } else {
     c_eta_idx_current <- 1
   }
-  
+
   # begin iterations
   for (i in 1:iter) {
     # propose a candidate gamma
@@ -380,13 +400,17 @@ lsp_fixed_gibbs_sampler <- function(
     if (unif_gam < prob_delete || length(removed_gam) == 0) {
       chosen <- sample(selected_gam)[1]
       gam_prop[chosen] <- 0
-      log_prop_ratio <- log(prob_add) - log(prob_delete) + log(current_model_size) -
+      log_prop_ratio <- log(prob_add) -
+        log(prob_delete) +
+        log(current_model_size) -
         log(p - current_model_size + 1)
     } else if (unif_gam < prob_delete + prob_add) {
       # with prob_add, randomly add one gamma
       chosen <- sample(removed_gam)[1]
       gam_prop[chosen] <- 1
-      log_prop_ratio <- log(prob_delete) - log(prob_add) + log(p - current_model_size) -
+      log_prop_ratio <- log(prob_delete) -
+        log(prob_add) +
+        log(p - current_model_size) -
         log(current_model_size + 1)
     } else {
       # else swap
@@ -412,7 +436,7 @@ lsp_fixed_gibbs_sampler <- function(
       tau,
       a_sigma,
       b_sigma,
-      theta_mat[c_eta_idx_current,],
+      theta_mat[c_eta_idx_current, ],
       n
     ) +
       log_prop_ratio
@@ -471,17 +495,21 @@ lsp_fixed_gibbs_sampler <- function(
 
     # unnormalized log probability for all K states of eta and c
     W <- numeric(K)
-    for(k in 1:K){
-      W[k] <- sum(gam_current*log(theta_mat[k,]) + (1-gam_current)*log(1 - theta_mat[k,]))
+    for (k in 1:K) {
+      W[k] <- sum(
+        gam_current *
+          log(theta_mat[k, ]) +
+          (1 - gam_current) * log(1 - theta_mat[k, ])
+      )
     }
     # normalize probabilities
     # log-sum-exp trick to prevent NaN underflow
-    pi_eta_c <- exp(W - max(W))/sum(exp(W - max(W)))
+    pi_eta_c <- exp(W - max(W)) / sum(exp(W - max(W)))
     c_eta_idx_current <- sample(K, 1, prob = pi_eta_c)
 
     # store parameters
     if (i > burn_in && (i - burn_in) %% thin == 0) {
-      if(return_samples){
+      if (return_samples) {
         store_i <- (i - burn_in) / thin # index
 
         gam_store[store_i, ] <- gam_current
@@ -490,38 +518,41 @@ lsp_fixed_gibbs_sampler <- function(
         eta_store[store_i] <- cross_eta_c$eta[c_eta_idx_current]
         c_store[store_i] <- cross_eta_c$c[c_eta_idx_current]
         acc_store[store_i] <- acc
-      }else{
-        gam_mean <- gam_mean + gam_current/n_keep
-        beta_mean <- beta_mean + beta_current/n_keep
-        invsigma_2_mean <- invsigma_2_mean + invsigma_2_current/n_keep
-        eta_mean <- eta_mean + cross_eta_c$eta[c_eta_idx_current]/n_keep
-        c_mean <- c_mean + cross_eta_c$c[c_eta_idx_current]/n_keep
-        acc_mean <- acc_mean + acc/n_keep
+      } else {
+        gam_mean <- gam_mean + gam_current / n_keep
+        beta_mean <- beta_mean + beta_current / n_keep
+        invsigma_2_mean <- invsigma_2_mean + invsigma_2_current / n_keep
+        eta_mean <- eta_mean + cross_eta_c$eta[c_eta_idx_current] / n_keep
+        c_mean <- c_mean + cross_eta_c$c[c_eta_idx_current] / n_keep
+        acc_mean <- acc_mean + acc / n_keep
       }
     }
   }
 
-  if(return_samples){
+  if (return_samples) {
     list(
       "beta" = beta_store,
       "gamma" = gam_store,
       "invsigma_2" = invsigma_2_store,
       "eta" = eta_store,
       "c" = c_store,
-      "accs" = acc_store)
-  }else{
+      "accs" = acc_store
+    )
+  } else {
     list(
       "beta" = beta_mean,
       "gamma" = gam_mean,
       "invsigma_2" = invsigma_2_mean,
       "eta" = eta_mean,
       "c" = c_mean,
-      "accs" = acc_mean)
+      "accs" = acc_mean
+    )
   }
 }
 
+# compute model prior conditional on s
 compute_log_prior_gamma <- function(gamma, s, u) {
-  theta <- s * u # compute theta vector
+  theta <- pmax(1e-10, pmin(s * u, 1 - 1e-10)) # compute theta vector
 
   # compute log probability of gamma conditional on s
   log_prob <- sum(gamma * log(theta) + (1 - gamma) * log(1 - theta))
@@ -531,7 +562,7 @@ compute_log_prior_gamma <- function(gamma, s, u) {
 
 # compute unnormalized log-posterior density (marginalizing out beta and sigma)
 # (Z is (1, X)), does not include some constants that will be cancelled in log_acceptance_rate
-lsp_random_log_posterior <- function(
+lsp_random_ss_log_posterior <- function(
   Z,
   Z_gram,
   y,
@@ -552,16 +583,18 @@ lsp_random_log_posterior <- function(
   model_prior <- compute_log_prior_gamma(gamma, s, u)
 
   y_Z <- crossprod(Z, y)
-  quadratic_term <- t(y_Z) %*% chol2inv(cholQ) %*% y_Z
+  quadratic_term <- as.numeric(t(y_Z) %*% chol2inv(cholQ) %*% y_Z)
 
-  n_gam /2 *log(tau) - .5 * log_detQ -
-    (n / 2 + a_sigma) *
-      log(sum(y^2) - quadratic_term + b_sigma) +
+  n_gam /
+    2 *
+    log(tau) -
+    .5 * log_detQ -
+    (n / 2 + a_sigma) * log(.5 * (sum(y^2) - quadratic_term) + b_sigma) +
     model_prior
 }
 
 # compute log acceptance rate: log(p(gamma_new|data)) - log(p(gamma_old|data))
-lsp_random_log_acceptance_rate <- function(
+lsp_random_ss_log_acceptance_rate <- function(
   Z_old,
   Z_old_gram,
   Z_new,
@@ -576,7 +609,7 @@ lsp_random_log_acceptance_rate <- function(
   u,
   n
 ) {
-  lsp_random_log_posterior(
+  lsp_random_ss_log_posterior(
     Z_new,
     Z_new_gram,
     y,
@@ -588,7 +621,7 @@ lsp_random_log_acceptance_rate <- function(
     u,
     n
   ) -
-    lsp_random_log_posterior(
+    lsp_random_ss_log_posterior(
       Z_old,
       Z_old_gram,
       y,
@@ -602,7 +635,7 @@ lsp_random_log_acceptance_rate <- function(
     )
 }
 
-lsp_random_gibbs_sampler <- function(
+lsp_random_ss_gibbs_sampler <- function(
   X,
   y,
   weights = NULL,
@@ -623,15 +656,43 @@ lsp_random_gibbs_sampler <- function(
   return_samples = TRUE
 ) {
   if (is.null(weights)) {
-    c <- 0 # if no weights, then clearly there is no confidence in them
+    c <- 0 # if no weights, then assign zero confidence and zero eta
     eta <- 0
+  } else if (is.null(eta)) {
+    # if missing eta space, assign by default
+    eta <- 0
+    step_size <- 1
+    # Calculate initial bound to ensure it starts < 1; hard code sparsity to be 0.05 for upper bound
+    theta_bound <- 0.05 * max(weights)^eta / mean(weights^eta)
+
+    while (eta <= 19) {
+      eta <- eta + step_size # step forward
+      theta_bound <- 0.05 * max(weights)^eta / mean(weights^eta)
+
+      # if threshold is crossed, backtrack with smaller steps
+      if (theta_bound >= 1) {
+        # Step back to the last safe value
+        eta <- eta - step_size
+
+        # Decrease the step size for finer searching
+        if (step_size == 1) {
+          step_size <- 0.1
+        } else if (step_size == 0.1) {
+          step_size <- 0.01
+        } else {
+          break
+        }
+      }
+    }
+    # generate eta space
+    eta <- seq(1, eta, length.out = 10)
   }
 
   p <- ncol(X)
   n <- nrow(X)
 
   # number of values of eta and c in grid
-  K <- length(c)*length(eta)
+  K <- length(c) * length(eta)
 
   # all c, eta values
   cross_eta_c <- expand.grid(eta = eta, c = c)
@@ -641,21 +702,22 @@ lsp_random_gibbs_sampler <- function(
 
   # eta and c are fixed
   if (length(c) == 1 & length(eta) == 1) {
-    if(eta == 0 | c == 0){ 
+    if (eta == 0 | c == 0) {
       init_weights <- FALSE
-      u_mat[1,] <- rep(1, p)
-    }else{
+      u_mat[1, ] <- rep(1, p)
+    } else {
       # create vector for prior model probability
-      u_mat[1,] <- c * (weights^eta) / mean(weights^eta) + (1 - c)
+      u_mat[1, ] <- c * (weights^eta) / mean(weights^eta) + (1 - c)
     }
-  } else { # eta and c are random
-      for(k in 1:nrow(cross_eta_c)){
-        c_k <- cross_eta_c$c[k]
-        eta_k <- cross_eta_c$eta[k]
+  } else {
+    # eta and c are random
+    for (k in 1:nrow(cross_eta_c)) {
+      c_k <- cross_eta_c$c[k]
+      eta_k <- cross_eta_c$eta[k]
 
-        u_mat[k, ] <- c_k * (weights^eta_k) /mean((weights^eta_k)) + (1 - c_k)
-      }
+      u_mat[k, ] <- c_k * (weights^eta_k) / mean((weights^eta_k)) + (1 - c_k)
     }
+  }
 
   # per recommendation of rockova-george
   if (is.na(b_s)) {
@@ -665,7 +727,7 @@ lsp_random_gibbs_sampler <- function(
   # number of models left after thinning/burn_in
   n_keep <- ceiling((iter - burn_in) / thin)
 
-  if(return_samples){
+  if (return_samples) {
     # create space for gamma, beta, invsigma^2, acc
     gam_store <- matrix(0, nrow = n_keep, ncol = p)
     beta_store <- matrix(0, nrow = n_keep, ncol = p + 1)
@@ -675,7 +737,7 @@ lsp_random_gibbs_sampler <- function(
     c_store <- rep(0, n_keep)
     s_store <- rep(0, n_keep)
     acc_s_store <- rep(0, n_keep)
-  } else{
+  } else {
     # reduction for memory: only store means
     gam_mean <- rep(0, p)
     beta_mean <- rep(0, p + 1)
@@ -716,14 +778,14 @@ lsp_random_gibbs_sampler <- function(
     (1 /
       n *
       sum((y - cbind(1, X[, which(gam_current == 1)]) %*% beta_current)^2))
-  
+
   # find current index of eta and c in discrete uniform grid
-  if(K > 1){
+  if (K > 1) {
     c_eta_idx_current <- sample(K, 1)
-  }else{
+  } else {
     c_eta_idx_current <- 1
   }
-  
+
   # begin iterations
   for (i in 1:iter) {
     # propose a candidate gamma
@@ -747,14 +809,18 @@ lsp_random_gibbs_sampler <- function(
     if (unif_gam < prob_delete || length(removed_gam) == 0) {
       chosen <- sample(selected_gam)[1]
       gam_prop[chosen] <- 0
-      log_prop_ratio <- log(prob_add) - log(prob_delete) + log(current_model_size) -
+      log_prop_ratio <- log(prob_add) -
+        log(prob_delete) +
+        log(current_model_size) -
         log(p - current_model_size + 1)
     } else if (unif_gam < prob_delete + prob_add) {
       # with prob_add, randomly add one gamma
       chosen <- sample(removed_gam)[1]
       gam_prop[chosen] <- 1
-      log_prop_ratio <-  log(prob_delete) - log(prob_add) +
-        log(p - current_model_size) - log(current_model_size + 1)
+      log_prop_ratio <- log(prob_delete) -
+        log(prob_add) +
+        log(p - current_model_size) -
+        log(current_model_size + 1)
     } else {
       # else swap
       chosen1 <- sample(removed_gam)[1]
@@ -768,7 +834,7 @@ lsp_random_gibbs_sampler <- function(
     Z_new_gram <- crossprod(Z_new)
 
     # compute log acceptance rate
-    logacc <- lsp_random_log_acceptance_rate(
+    logacc <- lsp_random_ss_log_acceptance_rate(
       Z_old,
       Z_old_gram,
       Z_new,
@@ -780,11 +846,11 @@ lsp_random_gibbs_sampler <- function(
       a_sigma,
       b_sigma,
       s_current,
-      u_mat[c_eta_idx_current,],
+      u_mat[c_eta_idx_current, ],
       n
     ) +
       log_prop_ratio
-    if (log(runif(1)) < logacc[[1]]) {
+    if (log(runif(1)) < logacc) {
       # insert gamma draw
       gam_current <- gam_prop
 
@@ -840,15 +906,23 @@ lsp_random_gibbs_sampler <- function(
     logit_s_new <- rnorm(1, mean = logit_s, sd = s_proposal_sigma)
     s_new <- 1 / (1 + exp(-logit_s_new))
 
-    if (max(s_new * u_mat[c_eta_idx_current,]) >= 1) {
+    if (max(s_new * u_mat[c_eta_idx_current, ]) >= 1) {
       accept_s <- FALSE
     } else {
       # compute posterior ratio for s
       log_prior_s_new <- dbeta(s_new, a_s, b_s, log = TRUE)
       log_prior_s_old <- dbeta(s_current, a_s, b_s, log = TRUE)
 
-      log_lik_s_new <- compute_log_prior_gamma(gam_current, s_new, u_mat[c_eta_idx_current,])
-      log_lik_s_old <- compute_log_prior_gamma(gam_current, s_current, u_mat[c_eta_idx_current,])
+      log_lik_s_new <- compute_log_prior_gamma(
+        gam_current,
+        s_new,
+        u_mat[c_eta_idx_current, ]
+      )
+      log_lik_s_old <- compute_log_prior_gamma(
+        gam_current,
+        s_current,
+        u_mat[c_eta_idx_current, ]
+      )
 
       # jacobian adjustment
       log_jacobian_new <- log(s_new) + log(1 - s_new)
@@ -870,42 +944,53 @@ lsp_random_gibbs_sampler <- function(
 
     # unnormalized log probability for all K states of eta and c
     W <- numeric(K)
-    for(k in 1:K){
-      theta_k <- pmin(pmax(s_current*u_mat[k,], 1e-4), 1-1e-4)
-      W[k] <- sum(gam_current*log(theta_k) + (1-gam_current)*log(1 - theta_k))
+    for (k in 1:K) {
+      theta_k <- pmin(pmax(s_current * u_mat[k, ], 1e-4), 1 - 1e-4)
+      W[k] <- sum(
+        gam_current * log(theta_k) + (1 - gam_current) * log(1 - theta_k)
+      )
     }
     # normalize probabilities
     # log-sum-exp trick to prevent NaN underflow
-    pi_eta_c <- exp(W - max(W))/sum(exp(W - max(W)))
+    pi_eta_c <- exp(W - max(W)) / sum(exp(W - max(W)))
     c_eta_idx_current <- sample(K, 1, prob = pi_eta_c)
 
     # store parameters
     if (i > burn_in && (i - burn_in) %% thin == 0) {
-      if(return_samples){
+      c_val <- cross_eta_c$c[c_eta_idx_current]
+      if (return_samples) {
         store_i <- (i - burn_in) / thin # index
 
         gam_store[store_i, ] <- gam_current
         beta_store[store_i, ] <- beta_current
         invsigma_2_store[store_i] <- invsigma_2_current
-        eta_store[store_i] <- cross_eta_c$eta[c_eta_idx_current]
-        c_store[store_i] <- cross_eta_c$c[c_eta_idx_current]
+        c_store[store_i] <- c_val
+        eta_store[store_i] <- if (c_val == 0) {
+          0
+        } else {
+          cross_eta_c$eta[c_eta_idx_current]
+        }
         s_store[store_i] <- s_current
         acc_store[store_i] <- acc
         acc_s_store[store_i] <- accept_s
-      }else{
-        gam_mean <- gam_mean + gam_current/n_keep
-        beta_mean <- beta_mean + beta_current/n_keep
-        invsigma_2_mean <- invsigma_2_mean + invsigma_2_current/n_keep
-        eta_mean <- eta_mean + cross_eta_c$eta[c_eta_idx_current]/n_keep
-        c_mean <- c_mean + cross_eta_c$c[c_eta_idx_current]/n_keep
-        s_mean <- s_mean + s_current/n_keep
-        acc_mean <- acc_mean + acc/n_keep
-        acc_s_mean <- acc_s_mean + accept_s/n_keep
+      } else {
+        gam_mean <- gam_mean + gam_current / n_keep
+        beta_mean <- beta_mean + beta_current / n_keep
+        invsigma_2_mean <- invsigma_2_mean + invsigma_2_current / n_keep
+        c_mean <- c_mean + c_val / n_keep
+        eta_mean <- if (c_val == 0) {
+          eta_mean
+        } else {
+          eta_mean + cross_eta_c$eta[c_eta_idx_current] / n_keep
+        }
+        s_mean <- s_mean + s_current / n_keep
+        acc_mean <- acc_mean + acc / n_keep
+        acc_s_mean <- acc_s_mean + accept_s / n_keep
       }
     }
   }
 
-  if(return_samples){
+  if (return_samples) {
     list(
       "beta" = beta_store,
       "gamma" = gam_store,
@@ -914,8 +999,9 @@ lsp_random_gibbs_sampler <- function(
       "c" = c_store,
       "s" = s_store,
       "accs" = acc_store,
-      "acc_s" = acc_s_store)
-  }else{
+      "acc_s" = acc_s_store
+    )
+  } else {
     list(
       "beta" = beta_mean,
       "gamma" = gam_mean,
@@ -924,9 +1010,1204 @@ lsp_random_gibbs_sampler <- function(
       "c" = c_mean,
       "s" = s_mean,
       "accs" = acc_mean,
-      "acc_s" = acc_s_mean)
+      "acc_s" = acc_s_mean
+    )
   }
 }
+
+# Load Spike-and-Slab LASSO - fixed ----------------------------------------------
+lsp_fixed_ssl_map <- function(
+  X,
+  y,
+  weights,
+  s_fixed = 0.5,
+  E_space = c(1, 2, 3),
+  c_space = c(0, 1),
+  lambda1 = NULL,
+  lambda0s = NULL,
+  variance = "unknown",
+  max_iter = 500,
+  eps = 0.001
+) {
+  n <- nrow(X)
+  p <- ncol(X)
+
+  if (is.null(weights)) {
+    weights <- rep(1, p)
+    E_space <- 0
+    c_space <- 0
+  }
+
+  # ── Standardize X
+  std_X <- standardize(X)
+  XX <- std_X$XX
+  mean_y <- mean(y)
+  yy <- y - mean_y
+
+  # default lambda1 is 1
+  if (is.null(lambda1)) {
+    lambda1 <- 1
+  }
+  # default lambda0 path is 1:n
+  if (is.null(lambda0s)) {
+    lambda0s <- seq(lambda1, n, length.out = 100)
+  }
+
+  # Sigma initialization
+  df <- 3
+  sigquant <- 0.9
+  sigest <- sd(yy)
+  qchi <- qchisq(1 - sigquant, df)
+  ncp <- sigest^2 * qchi / df
+  min_sigma2 <- sigest^2 / n
+  sigma_init <- if (variance == "unknown") sqrt(df * ncp / (df + 2)) else 1.0
+
+  initialbeta <- rep(0, p)
+  count_max <- 10L
+
+  # ── Fit ────────────────────────────────────────────────────────────────
+  map_results <- find_MAP_fixed_hyperparams(
+    X = XX,
+    y = yy,
+    weights = weights,
+    s_fixed = s_fixed,
+    E_space = E_space,
+    c_space = c_space,
+    lambda1 = lambda1,
+    lambda0s = lambda0s,
+    initialbeta = initialbeta,
+    variance = variance,
+    sigma = sigma_init,
+    min_sigma2 = min_sigma2,
+    eps = eps,
+    max_iter = max_iter,
+    count_max = count_max
+  )
+
+  # ── Post-processing ───────────
+  for (l in seq_along(map_results)) {
+    map_results[[l]]$intercept <- mean_y -
+      as.numeric(crossprod(std_X$c, map_results[[l]]$beta))
+    names(map_results[[l]]$beta) <- colnames(X)
+  }
+
+  return(map_results)
+}
+
+standardize <- function(X) {
+  c_vec <- colMeans(X)
+  XX <- sweep(X, 2, c_vec, "-") # centre only, matching scale(..., scale=FALSE)
+  list(XX = XX, c = c_vec)
+}
+
+construct_v_vec <- function(weights, c_val, eta) {
+  if (c_val == 0) {
+    return(rep(1.0, length(weights)))
+  }
+  w_eta <- weights^eta
+  c_val * (w_eta / mean(w_eta)) + (1 - c_val)
+}
+
+# Vectorised over a vector of theta_j values
+threshold_func_vec <- function(theta_vec, sigma2, lambda1, lambda0, xnorm_vec) {
+  p <- length(theta_vec)
+  if (lambda1 == lambda0) {
+    return(rep(sigma2 * lambda1, p))
+  }
+
+  # pstar at 0
+  ratio0 <- ((1 - theta_vec) / theta_vec) * (lambda0 / lambda1)
+  pstar0 <- 1 / (1 + ratio0)
+  lstar0 <- pstar0 * lambda1 + (1 - pstar0) * lambda0
+
+  # g_func at 0
+  g0 <- (lstar0 - lambda1)^2 + 2 * xnorm_vec / sigma2 * log(pstar0)
+
+  result <- ifelse(
+    g0 > 0,
+    sqrt(2 * xnorm_vec * sigma2 * log(1 / pstar0)) + sigma2 * lambda1,
+    sigma2 * lstar0
+  )
+  result
+}
+
+update_sigma2 <- function(r) sum(r^2) / (length(r))
+
+# Scalar SSL thresholding
+SSL_thresholding <- function(
+  z,
+  beta_val,
+  lambda0,
+  lambda1,
+  theta_j,
+  norm,
+  delta,
+  sigma2
+) {
+  if (abs(z) <= delta) {
+    return(0)
+  }
+  if (lambda1 == lambda0) {
+    lambda <- lambda1
+  } else {
+    ratio <- ((1 - theta_j) / theta_j) *
+      (lambda0 / lambda1) *
+      exp(-abs(beta_val) * (lambda0 - lambda1))
+    pstar_val <- 1 / (1 + ratio)
+    lambda <- pstar_val * lambda1 + (1 - pstar_val) * lambda0
+  }
+  temp <- abs(z) - sigma2 * lambda
+  if (temp > 0) sign(z) * temp / norm else 0
+}
+
+# log posterior for evaluating c, eta (fixed s)
+compute_log_posterior_fixed <- function(
+  y,
+  X,
+  beta_final,
+  sigma_final,
+  v_vec,
+  lambda1,
+  lambda0_final,
+  s_fixed
+) {
+  n <- length(y)
+  p <- length(beta_final)
+
+  theta_v <- pmax(pmin(s_fixed * v_vec, 1 - 1e-4), 1e-4)
+
+  residuals <- y - as.vector(X %*% beta_final)
+  rss <- sum(residuals^2)
+  sig2 <- sigma_final^2
+  log_lik <- -(n / 2) * log(sig2) - rss / (2 * sig2)
+
+  ab <- abs(beta_final)
+  term1 <- theta_v * (lambda1 / 2) * exp(-lambda1 * ab)
+  term2 <- (1 - theta_v) * (lambda0_final / 2) * exp(-lambda0_final * ab)
+  log_prior_beta <- sum(log(pmax(term1 + term2, 1e-300)))
+
+  # log_prior_s is omitted because s is fixed (it acts as a constant)
+
+  log_lik + log_prior_beta
+}
+
+lsp_ssl_fixed_descent <- function(
+  X,
+  y,
+  initialbeta,
+  variance = "unknown",
+  lambda1,
+  lambda0s,
+  v_vec,
+  s_fixed,
+  sigma,
+  min_sigma2,
+  eps,
+  max_iter,
+  count_max
+) {
+  n <- nrow(X)
+  p <- ncol(X)
+  L <- length(lambda0s)
+
+  xnorm <- colSums(X^2)
+  b_mat <- matrix(0, nrow = p, ncol = L)
+  sigmas <- rep(NA_real_, L)
+  loss <- rep(NA_real_, L)
+  iter_vec <- rep(0L, L)
+
+  a_vec <- initialbeta
+  newa <- initialbeta
+  a_old <- numeric(p)
+
+  e1 <- as.integer(a_vec != 0)
+  e2 <- as.integer(a_vec != 0)
+
+  r <- y - as.vector(X %*% a_vec)
+  z <- as.vector(crossprod(X, r))
+
+  thres <- min(n, max_iter)
+  if (p < thres) {
+    XTY <- as.vector(crossprod(X, y))
+    XTX <- crossprod(X)
+  } else {
+    XTY <- XTX <- NULL
+  }
+
+  delta <- numeric(p)
+  sigma2 <- sigma^2
+  sigma2_init <- sigma^2
+  estimate_sigma <- FALSE
+
+  # Theta is fixed throughout the path based on s_fixed
+  theta_vec <- pmax(pmin(s_fixed * v_vec, 1 - 1e-10), 1e-10)
+
+  for (l in 1:L) {
+    lambda0 <- lambda0s[l]
+
+    # ── Sigma update ────────────────────────────────────────────────────
+    if (l > 1L && variance == "unknown") {
+      if (iter_vec[l - 1L] < 100L) {
+        estimate_sigma <- TRUE
+        sigma2 <- update_sigma2(r)
+        if (sigma2 < min_sigma2) {
+          sigma2 <- sigma2_init
+          estimate_sigma <- FALSE
+        }
+      } else {
+        estimate_sigma <- FALSE
+        if (iter_vec[l - 1L] == max_iter) sigma2 <- sigma2_init
+      }
+    }
+
+    # Delta always updates on new lambda0
+    delta <- threshold_func_vec(theta_vec, sigma2, lambda1, lambda0, xnorm)
+    e2 <- pmax(e2, as.integer(abs(z) > delta))
+    counter <- 0L
+
+    # ══ Outer while ═══════════════════════════════════════════════════════
+    while (iter_vec[l] < max_iter) {
+      # ── Active-set optimisation ────────────────────────────────────────
+      while (iter_vec[l] < max_iter) {
+        iter_vec[l] <- iter_vec[l] + 1L
+        a_old[] <- a_vec
+
+        for (j in 1:p) {
+          counter <- counter + 1L # always increment, for all j
+
+          if (e1[j]) {
+            z[j] <- if (p >= thres) {
+              crossprod(X[, j], r)[[1L]] + xnorm[j] * a_vec[j]
+            } else {
+              XTY[j] - crossprod(XTX[, j], newa)[[1L]] + xnorm[j] * a_vec[j]
+            }
+
+            b_val <- SSL_thresholding(
+              z[j],
+              a_vec[j],
+              lambda0,
+              lambda1,
+              theta_vec[j],
+              xnorm[j],
+              delta[j],
+              sigma2
+            )
+            b_mat[j, l] <- b_val
+
+            if (p >= thres) {
+              shift <- b_val - a_vec[j]
+              if (shift != 0) r <- r - shift * X[, j]
+            } else {
+              newa[j] <- b_val
+            }
+
+            if (b_val == 0) e1[j] <- 0L
+          }
+
+          # Periodic update: fires every count_max variable visits
+          if (counter == count_max) {
+            if (variance == "unknown" && estimate_sigma) {
+              sigma2 <- update_sigma2(r)
+              if (sigma2 < min_sigma2) {
+                sigma2 <- sigma2_init
+              }
+              # Re-evaluate delta only if sigma changed
+              delta <- threshold_func_vec(
+                theta_vec,
+                sigma2,
+                lambda1,
+                lambda0,
+                xnorm
+              )
+            }
+            counter <- 0L
+          }
+        }
+
+        # Sync a_vec
+        if (p >= thres) {
+          a_vec <- b_mat[, l]
+        } else {
+          a_vec <- newa
+          newa <- a_vec
+        }
+
+        # Convergence check
+        check_idx <- which(e1 == 1L | a_old != 0)
+        converged_active <- TRUE
+        if (length(check_idx) > 0L) {
+          denom <- abs(a_vec[check_idx])
+          zero_new <- denom == 0
+          denom[zero_new] <- abs(a_old[check_idx][zero_new])
+          denom[denom == 0] <- .Machine$double.eps
+          if (any(abs(a_vec[check_idx] - a_old[check_idx]) / denom > eps)) {
+            converged_active <- FALSE
+          }
+        }
+        if (converged_active) break
+      } # end active-set while
+
+      # ── Strong-set violation scan ──────────────────────────────────────
+      violations_strong <- 0L
+      counter <- 0L
+      strong_cands <- which(e1 == 0L & e2 == 1L)
+
+      for (j in strong_cands) {
+        z[j] <- if (p >= thres) {
+          crossprod(X[, j], r)[[1L]] + xnorm[j] * a_vec[j]
+        } else {
+          XTY[j] - crossprod(XTX[, j], a_vec)[[1L]] + xnorm[j] * a_vec[j]
+        }
+
+        b_val <- SSL_thresholding(
+          z[j],
+          a_vec[j],
+          lambda0,
+          lambda1,
+          theta_vec[j],
+          xnorm[j],
+          delta[j],
+          sigma2
+        )
+        b_mat[j, l] <- b_val
+
+        if (b_val != 0) {
+          e1[j] <- 1L
+          e2[j] <- 1L
+          if (p >= thres) {
+            r <- r - b_val * X[, j]
+          }
+          a_vec[j] <- b_val
+          violations_strong <- violations_strong + 1L
+          counter <- counter + 1L
+        }
+
+        if (counter == count_max) {
+          if (variance == "unknown" && estimate_sigma) {
+            sigma2 <- update_sigma2(r)
+            if (sigma2 < min_sigma2) {
+              sigma2 <- sigma2_init
+            }
+            delta <- threshold_func_vec(
+              theta_vec,
+              sigma2,
+              lambda1,
+              lambda0,
+              xnorm
+            )
+          }
+          counter <- 0L
+        }
+      }
+
+      if (violations_strong > 0L) {
+        next
+      }
+
+      # ── Rest violation scan ────────────────────────────────────────────
+      violations_rest <- 0L
+      counter <- 0L
+      rest_cands <- which(e2 == 0L)
+
+      for (j in rest_cands) {
+        z[j] <- if (p >= thres) {
+          crossprod(X[, j], r)[[1L]] + xnorm[j] * a_vec[j]
+        } else {
+          XTY[j] - crossprod(XTX[, j], a_vec)[[1L]] + xnorm[j] * a_vec[j]
+        }
+
+        b_val <- SSL_thresholding(
+          z[j],
+          a_vec[j],
+          lambda0,
+          lambda1,
+          theta_vec[j],
+          xnorm[j],
+          delta[j],
+          sigma2
+        )
+        b_mat[j, l] <- b_val
+
+        if (b_val != 0) {
+          e1[j] <- 1L
+          e2[j] <- 1L
+          if (p >= thres) {
+            r <- r - b_val * X[, j]
+          }
+          a_vec[j] <- b_val
+          violations_rest <- violations_rest + 1L
+          counter <- counter + 1L
+        }
+
+        if (counter == count_max) {
+          if (variance == "unknown" && estimate_sigma) {
+            sigma2 <- update_sigma2(r)
+            if (sigma2 < min_sigma2) {
+              sigma2 <- sigma2_init
+            }
+            delta <- threshold_func_vec(
+              theta_vec,
+              sigma2,
+              lambda1,
+              lambda0,
+              xnorm
+            )
+          }
+          counter <- 0L
+        }
+      }
+
+      if (violations_rest > 0L) {
+        next
+      }
+
+      # ── Finalise ──────────────────────────────────────────────────────
+      if (p < thres) {
+        r <- y - as.vector(X %*% a_vec)
+      }
+      b_mat[, l] <- a_vec
+      loss[l] <- sum(r^2)
+      sigmas[l] <- sqrt(sigma2)
+      break
+    } # end outer while
+
+    # Fallback
+    if (is.na(loss[l])) {
+      if (p < thres) {
+        r <- y - as.vector(X %*% a_vec)
+      }
+      b_mat[, l] <- a_vec
+      loss[l] <- sum(r^2)
+      sigmas[l] <- sqrt(sigma2)
+    }
+  } # end lambda path
+
+  list(beta = b_mat, loss = loss, iter = iter_vec, sigmas = sigmas)
+}
+
+# ── Grid search wrapper ───────────────────────────────────────────────────────
+
+find_MAP_fixed_hyperparams <- function(
+  X,
+  y,
+  weights,
+  s_fixed,
+  E_space,
+  c_space,
+  lambda1,
+  lambda0s,
+  initialbeta,
+  variance,
+  sigma,
+  min_sigma2,
+  eps,
+  max_iter,
+  count_max
+) {
+  L <- length(lambda0s)
+
+  # Pre-compute all (c, eta) paths
+  all_paths <- vector("list", length(c_space) * length(E_space))
+  combo_idx <- 1L
+  for (c_val in c_space) {
+    for (eta_val in E_space) {
+      v_vec <- construct_v_vec(weights, c_val, eta_val)
+      res <- lsp_ssl_fixed_descent(
+        X,
+        y,
+        v_vec = v_vec,
+        s_fixed = s_fixed,
+        variance = variance,
+        lambda1 = lambda1,
+        lambda0s = lambda0s,
+        initialbeta = initialbeta,
+        sigma = sigma,
+        min_sigma2 = min_sigma2,
+        eps = eps,
+        max_iter = max_iter,
+        count_max = count_max
+      )
+      all_paths[[combo_idx]] <- list(
+        c_val = c_val,
+        eta_val = eta_val,
+        v_vec = v_vec,
+        res = res
+      )
+      combo_idx <- combo_idx + 1L
+    }
+  }
+
+  # Cross-sectional MAP selection
+  best_path_results <- vector("list", L)
+
+  for (l in 1:L) {
+    best_score <- -Inf
+    best_params_l <- list(
+      lambda0 = lambda0s[l],
+      c = NA,
+      eta = NA,
+      s = s_fixed,
+      beta = NULL,
+      sigma = NA,
+      score = NA
+    )
+
+    for (path in all_paths) {
+      beta_l <- path$res$beta[, l]
+      sigma_l <- path$res$sigmas[l]
+
+      if (is.na(sigma_l) || sigma_l <= 0 || anyNA(beta_l)) {
+        next
+      }
+
+      current_score <- compute_log_posterior_fixed(
+        y = y,
+        X = X,
+        beta_final = beta_l,
+        sigma_final = sigma_l,
+        v_vec = path$v_vec,
+        lambda1 = lambda1,
+        lambda0_final = lambda0s[l],
+        s_fixed = s_fixed
+      )
+
+      if (!is.finite(current_score)) {
+        next
+      }
+
+      if (current_score > best_score) {
+        best_score <- current_score
+        best_params_l$c <- path$c_val
+        best_params_l$eta <- path$eta_val
+        best_params_l$beta <- beta_l
+        best_params_l$sigma <- sigma_l
+        best_params_l$score <- current_score
+      }
+    }
+
+    if (is.infinite(best_score)) {
+      warning(sprintf("No valid score for lambda0[%d] = %.4f", l, lambda0s[l]))
+    }
+    best_path_results[[l]] <- best_params_l
+  }
+
+  best_path_results
+}
+
+# Spike-and-Slab LASSO - random ------------------------------------------
+lsp_random_ssl_map <- function(
+  X,
+  y,
+  weights,
+  a_s = 1,
+  b_s = NA,
+  E_space = c(1, 2, 3),
+  c_space = c(0, 1),
+  lambda1 = NULL,
+  lambda0s = NULL,
+  variance = "unknown",
+  max_iter = 500,
+  eps = 0.001
+) {
+  n <- nrow(X)
+  p <- ncol(X)
+
+  if (is.null(weights)) {
+    weights <- rep(1, p)
+    E_space <- 0
+    c_space <- 0
+  }
+
+  if (is.na(b_s)) {
+    b_s <- p
+  }
+
+  # ── Standardize X
+  std_X <- standardize(X)
+  XX <- std_X$XX
+  mean_y <- mean(y)
+  yy <- y - mean_y
+
+  # default lambda1 is 1
+  if (is.null(lambda1)) {
+    lambda1 <- 1
+  }
+  # default lambda0 path is 1:n
+  if (is.null(lambda0s)) {
+    lambda0s <- seq(lambda1, n, length.out = 100)
+  }
+
+  # Sigma initialization
+  df <- 3
+  sigquant <- 0.9
+  sigest <- sd(yy)
+  qchi <- qchisq(1 - sigquant, df)
+  ncp <- sigest^2 * qchi / df
+  min_sigma2 <- sigest^2 / n
+  sigma_init <- if (variance == "unknown") sqrt(df * ncp / (df + 2)) else 1.0
+
+  initialbeta <- rep(0, p)
+  count_max <- 10L
+
+  # ── Fit ────────────────────────────────────────────────────────────────
+  map_results <- find_MAP_hyperparams(
+    X = XX,
+    y = yy,
+    weights = weights,
+    a_s = a_s,
+    b_s = b_s,
+    E_space = E_space,
+    c_space = c_space,
+    lambda1 = lambda1,
+    lambda0s = lambda0s,
+    initialbeta = initialbeta,
+    variance = variance,
+    sigma = sigma_init,
+    min_sigma2 = min_sigma2,
+    eps = eps,
+    max_iter = max_iter,
+    count_max = count_max
+  )
+
+  # ── Post-processing ───────────
+  for (l in seq_along(map_results)) {
+    map_results[[l]]$intercept <- mean_y -
+      as.numeric(crossprod(std_X$c, map_results[[l]]$beta))
+    names(map_results[[l]]$beta) <- colnames(X)
+  }
+
+  return(map_results)
+}
+
+# Helper functions -------------------------------------------------------
+
+standardize <- function(X) {
+  c_vec <- colMeans(X)
+  XX <- sweep(X, 2, c_vec, "-") # centre only, matching scale(..., scale=FALSE)
+  list(XX = XX, c = c_vec)
+}
+
+expectation_approx <- function(beta_vec, a_s, b_s) {
+  p <- length(beta_vec)
+  max(0, min(1, (sum(beta_vec != 0) + a_s) / (a_s + b_s + p)))
+}
+
+construct_v_vec <- function(weights, c_val, eta) {
+  if (c_val == 0) {
+    return(rep(1.0, length(weights)))
+  }
+  w_eta <- weights^eta
+  c_val * (w_eta / mean(w_eta)) + (1 - c_val)
+}
+
+# Vectorised over a vector of theta_j values
+threshold_func_vec <- function(theta_vec, sigma2, lambda1, lambda0, xnorm_vec) {
+  p <- length(theta_vec)
+  if (lambda1 == lambda0) {
+    return(rep(sigma2 * lambda1, p))
+  }
+
+  # pstar at 0
+  ratio0 <- ((1 - theta_vec) / theta_vec) * (lambda0 / lambda1)
+  pstar0 <- 1 / (1 + ratio0)
+  lstar0 <- pstar0 * lambda1 + (1 - pstar0) * lambda0
+
+  # g_func at 0
+  g0 <- (lstar0 - lambda1)^2 + 2 * xnorm_vec / sigma2 * log(pstar0)
+
+  result <- ifelse(
+    g0 > 0,
+    sqrt(2 * xnorm_vec * sigma2 * log(1 / pstar0)) + sigma2 * lambda1,
+    sigma2 * lstar0
+  )
+  result
+}
+
+update_sigma2 <- function(r) sum(r^2) / (length(r))
+
+# Scalar SSL thresholding
+SSL_thresholding <- function(
+  z,
+  beta_val,
+  lambda0,
+  lambda1,
+  theta_j,
+  norm,
+  delta,
+  sigma2
+) {
+  if (abs(z) <= delta) {
+    return(0)
+  }
+  if (lambda1 == lambda0) {
+    lambda <- lambda1
+  } else {
+    ratio <- ((1 - theta_j) / theta_j) *
+      (lambda0 / lambda1) *
+      exp(-abs(beta_val) * (lambda0 - lambda1))
+    pstar_val <- 1 / (1 + ratio)
+    lambda <- pstar_val * lambda1 + (1 - pstar_val) * lambda0
+  }
+  temp <- abs(z) - sigma2 * lambda
+  if (temp > 0) sign(z) * temp / norm else 0
+}
+
+# log posterior for evaluating c, eta
+compute_log_posterior <- function(
+  y,
+  X,
+  beta_final,
+  sigma_final,
+  v_vec,
+  lambda1,
+  lambda0_final,
+  a_s,
+  b_s
+) {
+  n <- length(y)
+  p <- length(beta_final)
+
+  s_val <- max(0, min(1, (sum(beta_final != 0) + a_s) / (a_s + b_s + p)))
+  theta_v <- pmax(pmin(s_val * v_vec, 1 - 1e-4), 1e-4)
+
+  residuals <- y - as.vector(X %*% beta_final)
+  rss <- sum(residuals^2)
+  sig2 <- sigma_final^2
+  log_lik <- -(n / 2) * log(sig2) - rss / (2 * sig2)
+
+  ab <- abs(beta_final)
+  term1 <- theta_v * (lambda1 / 2) * exp(-lambda1 * ab)
+  term2 <- (1 - theta_v) * (lambda0_final / 2) * exp(-lambda0_final * ab)
+  log_prior_beta <- sum(log(pmax(term1 + term2, 1e-300)))
+
+  s_safe <- max(min(s_val, 1 - 1e-10), 1e-10)
+  log_prior_s <- (a_s - 1) * log(s_safe) + (b_s - 1) * log(1 - s_safe)
+
+  log_lik + log_prior_beta + log_prior_s
+}
+
+# Core coordinate descent ------------------------------------------------
+
+lsp_ssl_random_descent <- function(
+  X,
+  y,
+  initialbeta,
+  variance = "unknown",
+  lambda1,
+  lambda0s,
+  v_vec,
+  a_s,
+  b_s,
+  sigma,
+  min_sigma2,
+  eps,
+  max_iter,
+  count_max
+) {
+  n <- nrow(X)
+  p <- ncol(X)
+  L <- length(lambda0s)
+
+  xnorm <- colSums(X^2)
+  b_mat <- matrix(0, nrow = p, ncol = L)
+  sigmas <- rep(NA_real_, L)
+  loss <- rep(NA_real_, L)
+  iter_vec <- rep(0L, L)
+  s_path <- rep(NA_real_, L)
+
+  a_vec <- initialbeta
+  newa <- initialbeta
+  a_old <- numeric(p)
+
+  e1 <- as.integer(a_vec != 0)
+  e2 <- as.integer(a_vec != 0)
+
+  r <- y - as.vector(X %*% a_vec)
+  z <- as.vector(crossprod(X, r))
+
+  thres <- min(n, max_iter)
+  if (p < thres) {
+    XTY <- as.vector(crossprod(X, y))
+    XTX <- crossprod(X)
+  } else {
+    XTY <- XTX <- NULL
+  }
+
+  delta <- numeric(p)
+  sigma2 <- sigma^2
+  sigma2_init <- sigma^2
+  estimate_sigma <- FALSE
+  theta_vec <- pmax(pmin(0.5 * v_vec, 1 - 1e-10), 1e-10)
+
+  for (l in 1:L) {
+    lambda0 <- lambda0s[l]
+
+    # ── Sigma update ────────────────────────────────────────────────────
+    if (l > 1L && variance == "unknown") {
+      if (iter_vec[l - 1L] < 100L) {
+        estimate_sigma <- TRUE
+        sigma2 <- update_sigma2(r)
+        if (sigma2 < min_sigma2) {
+          sigma2 <- sigma2_init
+          estimate_sigma <- FALSE
+        }
+      } else {
+        estimate_sigma <- FALSE
+        if (iter_vec[l - 1L] == max_iter) sigma2 <- sigma2_init
+      }
+    }
+
+    # ── Theta / delta warm-start ─────────────────────────────────────────
+    if (l > 1L) {
+      s_val <- expectation_approx(b_mat[, l - 1L], a_s, b_s)
+      theta_vec <- pmax(pmin(s_val * v_vec, 1 - 1e-10), 1e-10)
+    }
+
+    delta <- threshold_func_vec(theta_vec, sigma2, lambda1, lambda0, xnorm)
+    e2 <- pmax(e2, as.integer(abs(z) > delta))
+    counter <- 0L
+
+    # ══ Outer while ═══════════════════════════════════════════════════════
+    while (iter_vec[l] < max_iter) {
+      # ── Active-set optimisation ────────────────────────────────────────
+      while (iter_vec[l] < max_iter) {
+        iter_vec[l] <- iter_vec[l] + 1L
+        a_old[] <- a_vec
+
+        for (j in 1:p) {
+          counter <- counter + 1L # always increment, for all j
+
+          if (e1[j]) {
+            z[j] <- if (p >= thres) {
+              crossprod(X[, j], r)[[1L]] + xnorm[j] * a_vec[j]
+            } else {
+              XTY[j] - crossprod(XTX[, j], newa)[[1L]] + xnorm[j] * a_vec[j]
+            }
+
+            b_val <- SSL_thresholding(
+              z[j],
+              a_vec[j],
+              lambda0,
+              lambda1,
+              theta_vec[j],
+              xnorm[j],
+              delta[j],
+              sigma2
+            )
+            b_mat[j, l] <- b_val
+
+            if (p >= thres) {
+              shift <- b_val - a_vec[j]
+              if (shift != 0) r <- r - shift * X[, j]
+            } else {
+              newa[j] <- b_val
+            }
+
+            if (b_val == 0) e1[j] <- 0L
+          }
+
+          # Periodic update: fires every count_max variable visits
+          # regardless of active set membership — matches C++ cadence
+          if (counter == count_max) {
+            if (variance == "unknown" && estimate_sigma) {
+              sigma2 <- update_sigma2(r)
+              if (sigma2 < min_sigma2) sigma2 <- sigma2_init
+            }
+            s_val <- expectation_approx(b_mat[, l], a_s, b_s)
+            theta_vec <- pmax(pmin(s_val * v_vec, 1 - 1e-10), 1e-10)
+            delta <- threshold_func_vec(
+              theta_vec,
+              sigma2,
+              lambda1,
+              lambda0,
+              xnorm
+            )
+            counter <- 0L
+          }
+        }
+
+        # Sync a_vec
+        if (p >= thres) {
+          a_vec <- b_mat[, l]
+        } else {
+          a_vec <- newa
+          newa <- a_vec
+        }
+
+        # Convergence check
+        check_idx <- which(e1 == 1L | a_old != 0)
+        converged_active <- TRUE
+        if (length(check_idx) > 0L) {
+          denom <- abs(a_vec[check_idx])
+          zero_new <- denom == 0
+          denom[zero_new] <- abs(a_old[check_idx][zero_new])
+          denom[denom == 0] <- .Machine$double.eps
+          if (any(abs(a_vec[check_idx] - a_old[check_idx]) / denom > eps)) {
+            converged_active <- FALSE
+          }
+        }
+        if (converged_active) break
+      } # end active-set while
+
+      # ── Strong-set violation scan ──────────────────────────────────────
+      violations_strong <- 0L
+      counter <- 0L
+      strong_cands <- which(e1 == 0L & e2 == 1L)
+
+      for (j in strong_cands) {
+        z[j] <- if (p >= thres) {
+          crossprod(X[, j], r)[[1L]] + xnorm[j] * a_vec[j]
+        } else {
+          XTY[j] - crossprod(XTX[, j], a_vec)[[1L]] + xnorm[j] * a_vec[j]
+        }
+
+        b_val <- SSL_thresholding(
+          z[j],
+          a_vec[j],
+          lambda0,
+          lambda1,
+          theta_vec[j],
+          xnorm[j],
+          delta[j],
+          sigma2
+        )
+        b_mat[j, l] <- b_val
+
+        if (b_val != 0) {
+          e1[j] <- 1L
+          e2[j] <- 1L
+          if (p >= thres) {
+            r <- r - b_val * X[, j]
+          }
+          a_vec[j] <- b_val
+          violations_strong <- violations_strong + 1L
+          counter <- counter + 1L
+        }
+
+        if (counter == count_max) {
+          if (variance == "unknown" && estimate_sigma) {
+            sigma2 <- update_sigma2(r)
+            if (sigma2 < min_sigma2) sigma2 <- sigma2_init
+          }
+          s_val <- expectation_approx(b_mat[, l], a_s, b_s)
+          theta_vec <- pmax(pmin(s_val * v_vec, 1 - 1e-10), 1e-10)
+          delta <- threshold_func_vec(
+            theta_vec,
+            sigma2,
+            lambda1,
+            lambda0,
+            xnorm
+          )
+          counter <- 0L
+        }
+      }
+
+      if (violations_strong > 0L) {
+        next
+      }
+
+      # ── Rest violation scan ────────────────────────────────────────────
+      violations_rest <- 0L
+      counter <- 0L
+      rest_cands <- which(e2 == 0L)
+
+      for (j in rest_cands) {
+        z[j] <- if (p >= thres) {
+          crossprod(X[, j], r)[[1L]] + xnorm[j] * a_vec[j]
+        } else {
+          XTY[j] - crossprod(XTX[, j], a_vec)[[1L]] + xnorm[j] * a_vec[j]
+        }
+
+        b_val <- SSL_thresholding(
+          z[j],
+          a_vec[j],
+          lambda0,
+          lambda1,
+          theta_vec[j],
+          xnorm[j],
+          delta[j],
+          sigma2
+        )
+        b_mat[j, l] <- b_val
+
+        if (b_val != 0) {
+          e1[j] <- 1L
+          e2[j] <- 1L
+          if (p >= thres) {
+            r <- r - b_val * X[, j]
+          }
+          a_vec[j] <- b_val
+          violations_rest <- violations_rest + 1L
+          counter <- counter + 1L
+        }
+
+        if (counter == count_max) {
+          if (variance == "unknown" && estimate_sigma) {
+            sigma2 <- update_sigma2(r)
+            if (sigma2 < min_sigma2) sigma2 <- sigma2_init
+          }
+          s_val <- expectation_approx(b_mat[, l], a_s, b_s)
+          theta_vec <- pmax(pmin(s_val * v_vec, 1 - 1e-10), 1e-10)
+          delta <- threshold_func_vec(
+            theta_vec,
+            sigma2,
+            lambda1,
+            lambda0,
+            xnorm
+          )
+          counter <- 0L
+        }
+      }
+
+      if (violations_rest > 0L) {
+        next
+      }
+
+      # ── Finalise ──────────────────────────────────────────────────────
+      if (p < thres) {
+        r <- y - as.vector(X %*% a_vec)
+      }
+      b_mat[, l] <- a_vec
+      loss[l] <- sum(r^2)
+      sigmas[l] <- sqrt(sigma2)
+      s_path[l] <- expectation_approx(b_mat[, l], a_s, b_s)
+      break
+    } # end outer while
+
+    # Fallback
+    if (is.na(loss[l])) {
+      if (p < thres) {
+        r <- y - as.vector(X %*% a_vec)
+      }
+      b_mat[, l] <- a_vec
+      loss[l] <- sum(r^2)
+      sigmas[l] <- sqrt(sigma2)
+      s_path[l] <- expectation_approx(b_mat[, l], a_s, b_s)
+    }
+  } # end lambda path
+
+  list(
+    beta = b_mat,
+    loss = loss,
+    iter = iter_vec,
+    sigmas = sigmas,
+    s_path = s_path
+  )
+}
+
+# ── Grid search wrapper ───────────────────────────────────────────────────────
+
+find_MAP_hyperparams <- function(
+  X,
+  y,
+  weights,
+  a_s,
+  b_s,
+  E_space,
+  c_space,
+  lambda1,
+  lambda0s,
+  initialbeta,
+  variance,
+  sigma,
+  min_sigma2,
+  eps,
+  max_iter,
+  count_max
+) {
+  L <- length(lambda0s)
+
+  # Pre-compute all (c, eta) paths
+  all_paths <- vector("list", length(c_space) * length(E_space))
+  combo_idx <- 1L
+  for (c_val in c_space) {
+    for (eta_val in E_space) {
+      v_vec <- construct_v_vec(weights, c_val, eta_val)
+      res <- lsp_ssl_random_descent(
+        X,
+        y,
+        v_vec = v_vec,
+        a_s = a_s,
+        b_s = b_s,
+        variance = variance,
+        lambda1 = lambda1,
+        lambda0s = lambda0s,
+        initialbeta = initialbeta,
+        sigma = sigma,
+        min_sigma2 = min_sigma2,
+        eps = eps,
+        max_iter = max_iter,
+        count_max = count_max
+      )
+      all_paths[[combo_idx]] <- list(
+        c_val = c_val,
+        eta_val = eta_val,
+        v_vec = v_vec,
+        res = res
+      )
+      combo_idx <- combo_idx + 1L
+    }
+  }
+
+  # Cross-sectional MAP selection
+  best_path_results <- vector("list", L)
+
+  for (l in 1:L) {
+    best_score <- -Inf
+    best_params_l <- list(
+      lambda0 = lambda0s[l],
+      c = NA,
+      eta = NA,
+      s = NA,
+      beta = NULL,
+      sigma = NA,
+      score = NA
+    )
+
+    for (path in all_paths) {
+      beta_l <- path$res$beta[, l]
+      sigma_l <- path$res$sigmas[l]
+
+      if (is.na(sigma_l) || sigma_l <= 0 || anyNA(beta_l)) {
+        next
+      }
+
+      current_score <- compute_log_posterior(
+        y = y,
+        X = X,
+        beta_final = beta_l,
+        sigma_final = sigma_l,
+        v_vec = path$v_vec,
+        lambda1 = lambda1,
+        lambda0_final = lambda0s[l],
+        a_s = a_s,
+        b_s = b_s
+      )
+
+      if (!is.finite(current_score)) {
+        next
+      }
+
+      if (current_score > best_score) {
+        best_score <- current_score
+        best_params_l$c <- path$c_val
+        best_params_l$eta <- path$eta_val
+        best_params_l$s <- path$res$s_path[l]
+        best_params_l$beta <- beta_l
+        best_params_l$sigma <- sigma_l
+        best_params_l$score <- current_score
+      }
+    }
+
+    if (is.infinite(best_score)) {
+      warning(sprintf("No valid score for lambda0[%d] = %.4f", l, lambda0s[l]))
+    }
+    best_path_results[[l]] <- best_params_l
+  }
+
+  best_path_results
+}
+
 
 # LLM-Lasso ---------------------------------------------------------------
 # code may be found at https://github.com/pilancilab/LLM-Lasso, lightly edited for functionality
@@ -1111,9 +2392,26 @@ llm_lasso_simp <- function(
   )
 }
 
+select_lambda0_bic <- function(ssl_object, X, y) {
+  rss <- apply(
+    t(do.call(rbind, purrr::transpose(ssl_object)$beta)),
+    2,
+    function(b) sum((y - X %*% b)^2)
+  )
+  df <- apply(
+    t(do.call(rbind, purrr::transpose(ssl_object)$beta)),
+    2,
+    function(b) sum(b != 0)
+  )
+  bic <- n * log(rss / n) + df * log(n)
+  best_idx <- which.min(bic)
+
+  c(ssl_object[[best_idx]]$intercept, ssl_object[[best_idx]]$beta)
+}
+
 # simulation function -----------------------------------------------------
 # this function runs the simulation for baseline methods
-baseline_data_sim_function <- function(seed, n){
+baseline_data_sim_function <- function(seed, n) {
   set.seed(seed)
   # generate X and coefficients
   X <- MASS::mvrnorm(n, mu = rep(0, p), Xvar * cov_mat)
@@ -1131,34 +2429,23 @@ baseline_data_sim_function <- function(seed, n){
     lambda = glmnet::cv.glmnet(X, y, alpha = 1)$lambda.min
   )))
 
-    # horseshoe prior
+  # horseshoe prior
   hs_fit <- Mhorseshoe::approx_horseshoe(
-    y = y, 
-    X = cbind(1, X), 
-    burn = 10000, 
+    y = y,
+    X = cbind(1, X),
+    burn = 10000,
     iter = 5000
-)
+  )
   hs_coef <- hs_fit$BetaHat
   rm(hs_fit)
-  gc()
-  
-  # Spike-and-Slab Lasso
-  sslasso_fit <- SSLASSO::SSLASSO(X = X, y = y)
-  model_index <- floor(ncol(sslasso_fit$beta)/2)
-  sslasso_intercept <- sslasso_fit$intercept[model_index]
-  sslasso_beta <- sslasso_fit$beta[, model_index]
-  sslasso_coefs <- c(sslasso_intercept, sslasso_beta)
-
-  rm(sslasso_fit)
   gc()
 
   baseline_fits <- list(
     "lasso" = lasso_results,
-    "horseshoe" = hs_coef,
-    "ss_lasso" = sslasso_coefs)
-  
+    "horseshoe" = hs_coef
+  )
+
   if (fixed_s == TRUE) {
-    
     # run standard discrete spike and slab
     baseline_fits$`ss, fixed s` <- lsp_fixed_gibbs_sampler(
       X,
@@ -1174,6 +2461,17 @@ baseline_data_sim_function <- function(seed, n){
       init_weights = FALSE,
       return_samples = FALSE
     )
+
+    # run standard spike and slab lasso
+    baseline_fits$`ssl, fixed s` <- lsp_fixed_ssl_map(
+      X,
+      y,
+      c_space = 0,
+      E_space = 0,
+      weights = NULL,
+      s_fixed = sparsity
+    ) |>
+      select_lambda0_bic(X = X, y = y)
   }
   # can also evaluate LSP with random sparsity
   if (random_s == TRUE) {
@@ -1191,6 +2489,16 @@ baseline_data_sim_function <- function(seed, n){
       init_weights = FALSE,
       return_samples = FALSE
     )
+
+    # run standard spike and slab lasso
+    baseline_fits$`ssl, random s` <- lsp_random_ssl_map(
+      X,
+      y,
+      c_space = 0,
+      E_space = 0,
+      weights = NULL
+    ) |>
+      select_lambda0_bic(X = X, y = y)
   }
 
   # return generated data and baseline models
@@ -1199,7 +2507,6 @@ baseline_data_sim_function <- function(seed, n){
     baselines = baseline_fits
   )
 }
-
 
 sim_function <- function(baseline_fits, weights) {
   # generate X and coefficients
@@ -1220,8 +2527,7 @@ sim_function <- function(baseline_fits, weights) {
   )$coef
 
   if (fixed_s == TRUE) {
-    
-    # run LSP with fixed sparsity
+    # run LSP for SS with fixed sparsity
     all_fits$`lsp, fixed s` <- lsp_fixed_gibbs_sampler(
       X,
       y,
@@ -1237,11 +2543,21 @@ sim_function <- function(baseline_fits, weights) {
       init_weights = TRUE,
       return_samples = FALSE
     )
+
+    # run LSP for SSL with fixed sparsity
+    all_fits$`lsp, ssl fixed s` <- lsp_fixed_ssl_map(
+      X,
+      y,
+      c_space = 1,
+      E_space = c(0, eta_range),
+      weights = NULL,
+      s_fixed = sparsity
+    ) |>
+      select_lambda0_bic(X = X, y = y)
   }
 
   # can also evaluate LSP with random sparsity
   if (random_s == TRUE) {
-
     # run LSP with random sparsity
     all_fits$`lsp, random s` <- lsp_random_gibbs_sampler(
       X,
@@ -1257,6 +2573,16 @@ sim_function <- function(baseline_fits, weights) {
       init_weights = TRUE,
       return_samples = FALSE
     )
+
+    # run LSP for SSL with fixed sparsity
+    all_fits$`lsp, ssl random s` <- lsp_random_ssl_map(
+      X,
+      y,
+      c_space = 1,
+      E_space = c(0, eta_range),
+      weights = NULL
+    ) |>
+      select_lambda0_bic(X = X, y = y)
   }
 
   # return metrics
