@@ -36,9 +36,11 @@ lsp_random_ss_log_posterior <- function(
   y_Z <- crossprod(Z, y)
   quadratic_term <- as.numeric(t(y_Z) %*% chol2inv(cholQ) %*% y_Z)
 
-  n_gam / 2 * log(tau) -
+  n_gam /
+    2 *
+    log(tau) -
     .5 * log_detQ -
-    (n / 2 + a_sigma) * log(.5*(sum(y^2) - quadratic_term) + b_sigma) +
+    (n / 2 + a_sigma) * log(.5 * (sum(y^2) - quadratic_term) + b_sigma) +
     model_prior
 }
 
@@ -105,15 +107,43 @@ lsp_random_ss_gibbs_sampler <- function(
   return_samples = TRUE
 ) {
   if (is.null(weights)) {
-    c <- 0 # if no weights, then clearly there is no confidence in them
+    c <- 0 # if no weights, then assign zero confidence and zero eta
     eta <- 0
+  } else if (is.null(eta)) {
+    # if missing eta space, assign by default
+    eta <- 0
+    step_size <- 1
+    # Calculate initial bound to ensure it starts < 1; hard code sparsity to be 0.05 for upper bound
+    theta_bound <- 0.05 * max(weights)^eta / mean(weights^eta)
+
+    while (eta <= 19) {
+      eta <- eta + step_size # step forward
+      theta_bound <- 0.05 * max(weights)^eta / mean(weights^eta)
+
+      # if threshold is crossed, backtrack with smaller steps
+      if (theta_bound >= 1) {
+        # Step back to the last safe value
+        eta <- eta - step_size
+
+        # Decrease the step size for finer searching
+        if (step_size == 1) {
+          step_size <- 0.1
+        } else if (step_size == 0.1) {
+          step_size <- 0.01
+        } else {
+          break
+        }
+      }
+    }
+    # generate eta space
+    eta <- seq(1, eta, length.out = 10)
   }
 
   p <- ncol(X)
   n <- nrow(X)
 
   # number of values of eta and c in grid
-  K <- length(c)*length(eta)
+  K <- length(c) * length(eta)
 
   # all c, eta values
   cross_eta_c <- expand.grid(eta = eta, c = c)
@@ -123,21 +153,22 @@ lsp_random_ss_gibbs_sampler <- function(
 
   # eta and c are fixed
   if (length(c) == 1 & length(eta) == 1) {
-    if(eta == 0 | c == 0){ 
+    if (eta == 0 | c == 0) {
       init_weights <- FALSE
-      u_mat[1,] <- rep(1, p)
-    }else{
+      u_mat[1, ] <- rep(1, p)
+    } else {
       # create vector for prior model probability
-      u_mat[1,] <- c * (weights^eta) / mean(weights^eta) + (1 - c)
+      u_mat[1, ] <- c * (weights^eta) / mean(weights^eta) + (1 - c)
     }
-  } else { # eta and c are random
-      for(k in 1:nrow(cross_eta_c)){
-        c_k <- cross_eta_c$c[k]
-        eta_k <- cross_eta_c$eta[k]
+  } else {
+    # eta and c are random
+    for (k in 1:nrow(cross_eta_c)) {
+      c_k <- cross_eta_c$c[k]
+      eta_k <- cross_eta_c$eta[k]
 
-        u_mat[k, ] <- c_k * (weights^eta_k) /mean((weights^eta_k)) + (1 - c_k)
-      }
+      u_mat[k, ] <- c_k * (weights^eta_k) / mean((weights^eta_k)) + (1 - c_k)
     }
+  }
 
   # per recommendation of rockova-george
   if (is.na(b_s)) {
@@ -147,7 +178,7 @@ lsp_random_ss_gibbs_sampler <- function(
   # number of models left after thinning/burn_in
   n_keep <- ceiling((iter - burn_in) / thin)
 
-  if(return_samples){
+  if (return_samples) {
     # create space for gamma, beta, invsigma^2, acc
     gam_store <- matrix(0, nrow = n_keep, ncol = p)
     beta_store <- matrix(0, nrow = n_keep, ncol = p + 1)
@@ -157,7 +188,7 @@ lsp_random_ss_gibbs_sampler <- function(
     c_store <- rep(0, n_keep)
     s_store <- rep(0, n_keep)
     acc_s_store <- rep(0, n_keep)
-  } else{
+  } else {
     # reduction for memory: only store means
     gam_mean <- rep(0, p)
     beta_mean <- rep(0, p + 1)
@@ -198,14 +229,14 @@ lsp_random_ss_gibbs_sampler <- function(
     (1 /
       n *
       sum((y - cbind(1, X[, which(gam_current == 1)]) %*% beta_current)^2))
-  
+
   # find current index of eta and c in discrete uniform grid
-  if(K > 1){
+  if (K > 1) {
     c_eta_idx_current <- sample(K, 1)
-  }else{
+  } else {
     c_eta_idx_current <- 1
   }
-  
+
   # begin iterations
   for (i in 1:iter) {
     # propose a candidate gamma
@@ -229,14 +260,18 @@ lsp_random_ss_gibbs_sampler <- function(
     if (unif_gam < prob_delete || length(removed_gam) == 0) {
       chosen <- sample(selected_gam)[1]
       gam_prop[chosen] <- 0
-      log_prop_ratio <- log(prob_add) - log(prob_delete) + log(current_model_size) -
+      log_prop_ratio <- log(prob_add) -
+        log(prob_delete) +
+        log(current_model_size) -
         log(p - current_model_size + 1)
     } else if (unif_gam < prob_delete + prob_add) {
       # with prob_add, randomly add one gamma
       chosen <- sample(removed_gam)[1]
       gam_prop[chosen] <- 1
-      log_prop_ratio <-  log(prob_delete) - log(prob_add) +
-        log(p - current_model_size) - log(current_model_size + 1)
+      log_prop_ratio <- log(prob_delete) -
+        log(prob_add) +
+        log(p - current_model_size) -
+        log(current_model_size + 1)
     } else {
       # else swap
       chosen1 <- sample(removed_gam)[1]
@@ -262,7 +297,7 @@ lsp_random_ss_gibbs_sampler <- function(
       a_sigma,
       b_sigma,
       s_current,
-      u_mat[c_eta_idx_current,],
+      u_mat[c_eta_idx_current, ],
       n
     ) +
       log_prop_ratio
@@ -322,15 +357,23 @@ lsp_random_ss_gibbs_sampler <- function(
     logit_s_new <- rnorm(1, mean = logit_s, sd = s_proposal_sigma)
     s_new <- 1 / (1 + exp(-logit_s_new))
 
-    if (max(s_new * u_mat[c_eta_idx_current,]) >= 1) {
+    if (max(s_new * u_mat[c_eta_idx_current, ]) >= 1) {
       accept_s <- FALSE
     } else {
       # compute posterior ratio for s
       log_prior_s_new <- dbeta(s_new, a_s, b_s, log = TRUE)
       log_prior_s_old <- dbeta(s_current, a_s, b_s, log = TRUE)
 
-      log_lik_s_new <- compute_log_prior_gamma(gam_current, s_new, u_mat[c_eta_idx_current,])
-      log_lik_s_old <- compute_log_prior_gamma(gam_current, s_current, u_mat[c_eta_idx_current,])
+      log_lik_s_new <- compute_log_prior_gamma(
+        gam_current,
+        s_new,
+        u_mat[c_eta_idx_current, ]
+      )
+      log_lik_s_old <- compute_log_prior_gamma(
+        gam_current,
+        s_current,
+        u_mat[c_eta_idx_current, ]
+      )
 
       # jacobian adjustment
       log_jacobian_new <- log(s_new) + log(1 - s_new)
@@ -352,43 +395,53 @@ lsp_random_ss_gibbs_sampler <- function(
 
     # unnormalized log probability for all K states of eta and c
     W <- numeric(K)
-    for(k in 1:K){
-      theta_k <- pmin(pmax(s_current*u_mat[k,], 1e-4), 1-1e-4)
-      W[k] <- sum(gam_current*log(theta_k) + (1-gam_current)*log(1 - theta_k))
+    for (k in 1:K) {
+      theta_k <- pmin(pmax(s_current * u_mat[k, ], 1e-4), 1 - 1e-4)
+      W[k] <- sum(
+        gam_current * log(theta_k) + (1 - gam_current) * log(1 - theta_k)
+      )
     }
     # normalize probabilities
     # log-sum-exp trick to prevent NaN underflow
-    pi_eta_c <- exp(W - max(W))/sum(exp(W - max(W)))
+    pi_eta_c <- exp(W - max(W)) / sum(exp(W - max(W)))
     c_eta_idx_current <- sample(K, 1, prob = pi_eta_c)
 
     # store parameters
     if (i > burn_in && (i - burn_in) %% thin == 0) {
       c_val <- cross_eta_c$c[c_eta_idx_current]
-      if(return_samples){
+      if (return_samples) {
         store_i <- (i - burn_in) / thin # index
 
         gam_store[store_i, ] <- gam_current
         beta_store[store_i, ] <- beta_current
         invsigma_2_store[store_i] <- invsigma_2_current
         c_store[store_i] <- c_val
-        eta_store[store_i] <- if (c_val == 0) 0 else cross_eta_c$eta[c_eta_idx_current]
+        eta_store[store_i] <- if (c_val == 0) {
+          0
+        } else {
+          cross_eta_c$eta[c_eta_idx_current]
+        }
         s_store[store_i] <- s_current
         acc_store[store_i] <- acc
         acc_s_store[store_i] <- accept_s
-      }else{
-        gam_mean <- gam_mean + gam_current/n_keep
-        beta_mean <- beta_mean + beta_current/n_keep
-        invsigma_2_mean <- invsigma_2_mean + invsigma_2_current/n_keep
-        c_mean <- c_mean + c_val/n_keep
-        eta_mean <- if(c_val == 0) eta_mean else eta_mean + cross_eta_c$eta[c_eta_idx_current]/n_keep
-        s_mean <- s_mean + s_current/n_keep
-        acc_mean <- acc_mean + acc/n_keep
-        acc_s_mean <- acc_s_mean + accept_s/n_keep
+      } else {
+        gam_mean <- gam_mean + gam_current / n_keep
+        beta_mean <- beta_mean + beta_current / n_keep
+        invsigma_2_mean <- invsigma_2_mean + invsigma_2_current / n_keep
+        c_mean <- c_mean + c_val / n_keep
+        eta_mean <- if (c_val == 0) {
+          eta_mean
+        } else {
+          eta_mean + cross_eta_c$eta[c_eta_idx_current] / n_keep
+        }
+        s_mean <- s_mean + s_current / n_keep
+        acc_mean <- acc_mean + acc / n_keep
+        acc_s_mean <- acc_s_mean + accept_s / n_keep
       }
     }
   }
 
-  if(return_samples){
+  if (return_samples) {
     list(
       "beta" = beta_store,
       "gamma" = gam_store,
@@ -397,8 +450,9 @@ lsp_random_ss_gibbs_sampler <- function(
       "c" = c_store,
       "s" = s_store,
       "accs" = acc_store,
-      "acc_s" = acc_s_store)
-  }else{
+      "acc_s" = acc_s_store
+    )
+  } else {
     list(
       "beta" = beta_mean,
       "gamma" = gam_mean,
@@ -407,6 +461,7 @@ lsp_random_ss_gibbs_sampler <- function(
       "c" = c_mean,
       "s" = s_mean,
       "accs" = acc_mean,
-      "acc_s" = acc_s_mean)
+      "acc_s" = acc_s_mean
+    )
   }
 }
