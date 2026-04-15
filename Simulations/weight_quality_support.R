@@ -180,7 +180,7 @@ compile_model_metrics <- function(model_object, weights, alpha, beta) {
 # Load MCMC Samplers ----------------------------------------------------------------
 # source("MCMC Samplers/LSP_regression_fixed_s.R")
 # source("MCMC Samplers/LSP_regression_random_s.R")
-lsp_fixed_log_posterior <- function(
+lsp_fixed_ss_log_posterior <- function(
   Z,
   Z_gram,
   y,
@@ -201,18 +201,18 @@ lsp_fixed_log_posterior <- function(
   model_prior <- sum(gamma * log(theta) + (1 - gamma) * log(1 - theta))
 
   y_Z <- crossprod(Z, y)
-  quadratic_term <- t(y_Z) %*% chol2inv(cholQ) %*% y_Z
+  quadratic_term <- as.numeric(t(y_Z) %*% chol2inv(cholQ) %*% y_Z)
 
   n_gam /
     2 *
     log(tau) -
     .5 * log_detQ -
-    (n / 2 + a_sigma) * log(sum(y^2) - quadratic_term + b_sigma) +
+    (n / 2 + a_sigma) * log(.5 * (sum(y^2) - quadratic_term) + b_sigma) +
     model_prior
 }
 
 # compute log acceptance rate: log(p(gamma_new|data)) - log(p(gamma_old|data))
-lsp_fixed_log_acceptance_rate <- function(
+lsp_fixed_ss_log_acceptance_rate <- function(
   Z_old,
   Z_old_gram,
   Z_new,
@@ -226,7 +226,7 @@ lsp_fixed_log_acceptance_rate <- function(
   theta,
   n
 ) {
-  lsp_fixed_log_posterior(
+  lsp_fixed_ss_log_posterior(
     Z_new,
     Z_new_gram,
     y,
@@ -237,7 +237,7 @@ lsp_fixed_log_acceptance_rate <- function(
     theta,
     n
   ) -
-    lsp_fixed_log_posterior(
+    lsp_fixed_ss_log_posterior(
       Z_old,
       Z_old_gram,
       y,
@@ -252,12 +252,12 @@ lsp_fixed_log_acceptance_rate <- function(
 
 # run discrete spike and slab sampler for regression. With confidence = 0, reduces to traditional spike and slab.
 # With confidence = 1, prior sparsity is entirely determined by the weights
-lsp_fixed_gibbs_sampler <- function(
+lsp_fixed_ss_gibbs_sampler <- function(
   X,
   y,
   weights = NULL,
   c = NA,
-  eta = 0,
+  eta = NULL,
   sparsity,
   a_sigma,
   b_sigma,
@@ -273,6 +273,33 @@ lsp_fixed_gibbs_sampler <- function(
   if (is.null(weights)) {
     c <- 0 # if no weights, then assign zero confidence and zero eta
     eta <- 0
+  } else if (is.null(eta)) {
+    eta <- 0
+    step_size <- 1
+    # Calculate initial bound to ensure it starts < 1
+    theta_bound <- s * max(weights)^eta / mean(weights^eta)
+
+    while (eta <= 20) {
+      eta <- eta + step_size # step forward
+      theta_bound <- s * max(weights)^eta / mean(weights^eta)
+
+      # if threshold is crossed, backtrack with smaller steps
+      if (theta_bound >= 1) {
+        # Step back to the last safe value
+        eta <- eta - step_size
+
+        # Decrease the step size for finer searching
+        if (step_size == 1) {
+          step_size <- 0.1
+        } else if (step_size == 0.1) {
+          step_size <- 0.01
+        } else {
+          break
+        }
+      }
+    }
+    # generate eta space
+    eta <- seq(1, eta, length.out = 10)
   }
 
   p <- ncol(X)
@@ -291,7 +318,12 @@ lsp_fixed_gibbs_sampler <- function(
   if (length(c) == 1 & length(eta) == 1) {
     if (eta == 0 | c == 0) {
       init_weights <- FALSE
-      theta_mat[1, ] <- rep(sparsity, p)
+      if (length(sparsity) == 1) {
+        theta_mat[1, ] <- rep(sparsity, p)
+      } else {
+        # insert inclusion probabilities directly
+        theta_mat[1, ] <- sparsity
+      }
     } else {
       # create vector for prior model probability
       raw_theta <- sparsity *
@@ -425,7 +457,7 @@ lsp_fixed_gibbs_sampler <- function(
     Z_new_gram <- crossprod(Z_new)
 
     # compute log acceptance rate
-    logacc <- lsp_fixed_log_acceptance_rate(
+    logacc <- lsp_fixed_ss_log_acceptance_rate(
       Z_old,
       Z_old_gram,
       Z_new,
@@ -440,7 +472,7 @@ lsp_fixed_gibbs_sampler <- function(
       n
     ) +
       log_prop_ratio
-    if (log(runif(1)) < logacc[[1]]) {
+    if (log(runif(1)) < logacc) {
       # insert gamma draw
       gam_current <- gam_prop
 
@@ -509,21 +541,30 @@ lsp_fixed_gibbs_sampler <- function(
 
     # store parameters
     if (i > burn_in && (i - burn_in) %% thin == 0) {
+      c_val <- cross_eta_c$c[c_eta_idx_current]
       if (return_samples) {
         store_i <- (i - burn_in) / thin # index
 
         gam_store[store_i, ] <- gam_current
         beta_store[store_i, ] <- beta_current
         invsigma_2_store[store_i] <- invsigma_2_current
-        eta_store[store_i] <- cross_eta_c$eta[c_eta_idx_current]
-        c_store[store_i] <- cross_eta_c$c[c_eta_idx_current]
+        c_store[store_i] <- c_val
+        eta_store[store_i] <- if (c_val == 0) {
+          0
+        } else {
+          cross_eta_c$eta[c_eta_idx_current]
+        }
         acc_store[store_i] <- acc
       } else {
         gam_mean <- gam_mean + gam_current / n_keep
         beta_mean <- beta_mean + beta_current / n_keep
         invsigma_2_mean <- invsigma_2_mean + invsigma_2_current / n_keep
-        eta_mean <- eta_mean + cross_eta_c$eta[c_eta_idx_current] / n_keep
-        c_mean <- c_mean + cross_eta_c$c[c_eta_idx_current] / n_keep
+        c_mean <- c_mean + c_val / n_keep
+        eta_mean <- if (c_val == 0) {
+          eta_mean
+        } else {
+          eta_mean + cross_eta_c$eta[c_eta_idx_current] / n_keep
+        }
         acc_mean <- acc_mean + acc / n_keep
       }
     }
@@ -2447,7 +2488,7 @@ baseline_data_sim_function <- function(seed, n) {
 
   if (fixed_s == TRUE) {
     # run standard discrete spike and slab
-    baseline_fits$`ss, fixed s` <- lsp_fixed_gibbs_sampler(
+    baseline_fits$`ss, fixed s` <- lsp_fixed_ss_gibbs_sampler(
       X,
       y,
       c = 0,
@@ -2476,7 +2517,7 @@ baseline_data_sim_function <- function(seed, n) {
   # can also evaluate LSP with random sparsity
   if (random_s == TRUE) {
     # run standard discrete spike and slab with random s
-    baseline_fits$`ss, random s` <- lsp_random_gibbs_sampler(
+    baseline_fits$`ss, random s` <- lsp_random_ss_gibbs_sampler(
       X,
       y,
       c = 0,
@@ -2528,7 +2569,7 @@ sim_function <- function(baseline_fits, weights) {
 
   if (fixed_s == TRUE) {
     # run LSP for SS with fixed sparsity
-    all_fits$`lsp, fixed s` <- lsp_fixed_gibbs_sampler(
+    all_fits$`lsp, fixed s` <- lsp_fixed_ss_gibbs_sampler(
       X,
       y,
       weights,
@@ -2550,7 +2591,7 @@ sim_function <- function(baseline_fits, weights) {
       y,
       c_space = 1,
       E_space = c(0, eta_range),
-      weights = NULL,
+      weights = weights,
       s_fixed = sparsity
     ) |>
       select_lambda0_bic(X = X, y = y)
@@ -2559,7 +2600,7 @@ sim_function <- function(baseline_fits, weights) {
   # can also evaluate LSP with random sparsity
   if (random_s == TRUE) {
     # run LSP with random sparsity
-    all_fits$`lsp, random s` <- lsp_random_gibbs_sampler(
+    all_fits$`lsp, random s` <- lsp_random_ss_gibbs_sampler(
       X,
       y,
       weights,
@@ -2580,7 +2621,7 @@ sim_function <- function(baseline_fits, weights) {
       y,
       c_space = 1,
       E_space = c(0, eta_range),
-      weights = NULL
+      weights = weights
     ) |>
       select_lambda0_bic(X = X, y = y)
   }
