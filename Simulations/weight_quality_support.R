@@ -1740,7 +1740,7 @@ lsp_random_ssl_map <- function(
 }
 
 
-# ── Helper functions ---------------------------------------------------------
+# Helper functions
 
 standardize <- function(X) {
   c_vec <- colMeans(X)
@@ -1853,7 +1853,7 @@ compute_log_posterior <- function(
 }
 
 
-# ── Core coordinate descent --------------------------------------------------
+# Core coordinate descent
 
 lsp_ssl_random_descent <- function(
   X,
