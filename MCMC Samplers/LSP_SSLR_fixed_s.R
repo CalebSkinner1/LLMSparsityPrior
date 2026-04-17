@@ -173,7 +173,12 @@ compute_log_posterior_fixed <- function(
   n <- length(y)
   sig2 <- sigma_final^2
 
-  theta_v <- pmin(pmax(s_fixed * v_vec, 1e-4), 1 - 1e-4)
+  # theta_vec is constant for the entire run
+  if (length(s_fixed) == p) {
+    theta_v <- pmax(pmin(s_fixed, 1 - 1e-10), 1e-10)
+  } else {
+    theta_v <- pmax(pmin(s_fixed * v_vec, 1 - 1e-10), 1e-10)
+  }
 
   rss <- sum((y - as.vector(X %*% beta_final))^2)
   log_lik <- -(n / 2) * log(sig2) - rss / (2 * sig2)
@@ -243,7 +248,12 @@ lsp_ssl_fixed_descent <- function(
   estimate_sigma <- FALSE
 
   # theta_vec is constant for the entire run — computed once here
-  theta_vec <- pmax(pmin(s_fixed * v_vec, 1 - 1e-10), 1e-10)
+  if (length(s_fixed) == p) {
+    theta_vec <- pmax(pmin(s_fixed, 1 - 1e-10), 1e-10)
+  } else {
+    theta_vec <- pmax(pmin(s_fixed * v_vec, 1 - 1e-10), 1e-10)
+  }
+
   delta <- numeric(p)
 
   for (l in seq_len(L)) {
