@@ -10,8 +10,8 @@ lsp_random_ssl_map <- function(
   weights,
   a_s = 1,
   b_s = NA,
-  E_space = seq(1, 9, by = 1),
-  c_space = c(0, 1),
+  E_space = NULL,
+  c_space = NA,
   lambda1 = NULL,
   lambda0s = NULL,
   variance = "unknown",
@@ -25,6 +25,34 @@ lsp_random_ssl_map <- function(
     weights <- rep(1, p)
     E_space <- 0
     c_space <- 0
+  } else if (is.null(E_space)) {
+    eta_max <- 0
+    step_size <- 1
+    # Calculate initial bound to ensure it starts < 1
+    theta_bound <- 0.01 * max(weights)^eta_max / mean(weights^eta_max)
+
+    while (eta_max <= 20) {
+      eta_max <- eta_max + step_size # step forward
+      theta_bound <- 0.01 * max(weights)^eta_max / mean(weights^eta_max)
+
+      # if threshold is crossed, backtrack with smaller steps
+      if (theta_bound >= 1) {
+        # Step back to the last safe value
+        eta_max <- eta_max - step_size
+
+        # Decrease the step size for finer searching
+        if (step_size == 1) {
+          step_size <- 0.1
+        } else if (step_size == 0.1) {
+          step_size <- 0.01
+        } else {
+          break
+        }
+      }
+    }
+    # generate eta space
+    E_space <- seq(1, eta_max, length.out = 20)
+    rm(eta_max)
   }
 
   if (is.na(b_s)) {

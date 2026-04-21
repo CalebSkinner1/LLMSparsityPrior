@@ -79,8 +79,8 @@ lsp_fixed_ss_gibbs_sampler <- function(
   X,
   y,
   weights = NULL,
-  c = NA,
-  eta = NULL,
+  c_space = NA,
+  E_space = NULL,
   sparsity,
   a_sigma,
   b_sigma,
@@ -94,22 +94,22 @@ lsp_fixed_ss_gibbs_sampler <- function(
   return_samples = TRUE
 ) {
   if (is.null(weights)) {
-    c <- 0 # if no weights, then assign zero confidence and zero eta
-    eta <- 0
-  } else if (is.null(eta)) {
-    eta <- 0
+    c <- 0 # if no weights, then assign zero confidence and zero E_space
+    E_space <- 0
+  } else if (is.null(E_space)) {
+    eta_max <- 0
     step_size <- 1
     # Calculate initial bound to ensure it starts < 1
-    theta_bound <- s * max(weights)^eta / mean(weights^eta)
+    theta_bound <- s * max(weights)^eta_max / mean(weights^eta_max)
 
-    while (eta <= 20) {
-      eta <- eta + step_size # step forward
-      theta_bound <- s * max(weights)^eta / mean(weights^eta)
+    while (eta_max <= 20) {
+      eta_max <- eta_max + step_size # step forward
+      theta_bound <- s * max(weights)^eta_max / mean(weights^eta_max)
 
       # if threshold is crossed, backtrack with smaller steps
       if (theta_bound >= 1) {
         # Step back to the last safe value
-        eta <- eta - step_size
+        eta_max <- eta_max - step_size
 
         # Decrease the step size for finer searching
         if (step_size == 1) {
@@ -122,24 +122,25 @@ lsp_fixed_ss_gibbs_sampler <- function(
       }
     }
     # generate eta space
-    eta <- seq(1, eta, length.out = 10)
+    E_space <- seq(1, eta_max, length.out = 20)
+    rm(eta_max)
   }
 
   p <- ncol(X)
   n <- nrow(X)
 
   # number of values of eta and c in grid
-  K <- length(c) * length(eta)
+  K <- length(c_space) * length(E_space)
 
   # all c, eta values
-  cross_eta_c <- expand.grid(eta = eta, c = c)
+  cross_eta_c <- expand.grid(eta = E_space, c = c_space)
 
   # create space for theta_mat
   theta_mat <- matrix(0, nrow = nrow(cross_eta_c), ncol = p)
 
   # eta and c are fixed
-  if (length(c) == 1 & length(eta) == 1) {
-    if (eta == 0 | c == 0) {
+  if (length(c_space) == 1 & length(E_space) == 1) {
+    if (E_space == 0 | c_space == 0) {
       init_weights <- FALSE
       if (length(sparsity) == 1) {
         theta_mat[1, ] <- rep(sparsity, p)
@@ -150,10 +151,10 @@ lsp_fixed_ss_gibbs_sampler <- function(
     } else {
       # create vector for prior model probability
       raw_theta <- sparsity *
-        c *
-        (weights^eta) /
-        mean(weights^eta) +
-        (1 - c) * sparsity
+        c_space *
+        (weights^E_space) /
+        mean(weights^E_space) +
+        (1 - c_space) * sparsity
 
       theta_mat[1, ] <- pmin(pmax(raw_theta, 1e-4), 1 - 1e-4)
     }
@@ -220,10 +221,14 @@ lsp_fixed_ss_gibbs_sampler <- function(
   )
   beta_current <- as.vector(coef(fit))
 
+  # init inv sigma^2
   invsigma_2_current <- 1 /
     (1 /
       n *
       sum((y - cbind(1, X[, which(gam_current == 1)]) %*% beta_current)^2))
+
+  # initialize at prior mean of tau, protecting against non-positive values
+  tau_current <- min(1, b_tau / (a_tau - 1))
 
   # find current index of eta and c in discrete uniform grid
   if (K > 1) {
@@ -318,6 +323,14 @@ lsp_fixed_ss_gibbs_sampler <- function(
         rate = 1 / 2 * sum((y - Z_new %*% beta_gamma)^2) + b_sigma
       )
 
+      # draw tau
+      tau_current <- 1 /
+        rgamma(
+          1,
+          shape = a_tau + (sum(gam_current) + 1) / 2,
+          rate = b_tau + sum(beta_gamma^2) * invsigma_2_current / 2
+        )
+
       # count acceptances
       acc <- 1
     } else {
@@ -341,6 +354,14 @@ lsp_fixed_ss_gibbs_sampler <- function(
         shape = n / 2 + a_sigma,
         rate = 1 / 2 * sum((y - Z_old %*% beta_gamma)^2) + b_sigma
       )
+
+      # draw tau
+      tau_current <- 1 /
+        rgamma(
+          1,
+          shape = a_tau + (sum(gam_current) + 1) / 2,
+          rate = b_tau + sum(beta_gamma^2) * invsigma_2_current / 2
+        )
 
       # count acceptances
       acc <- 0

@@ -90,11 +90,12 @@ lsp_random_ss_gibbs_sampler <- function(
   X,
   y,
   weights = NULL,
-  c = NA,
-  eta = 0,
-  a_sigma,
-  b_sigma,
-  tau,
+  c_space = NA,
+  E_space = NULL,
+  a_sigma = 1,
+  b_sigma = 1,
+  a_tau = 2,
+  b_tau = 1,
   a_s = 1,
   b_s = NA,
   s_proposal_sigma = 1,
@@ -107,23 +108,22 @@ lsp_random_ss_gibbs_sampler <- function(
   return_samples = TRUE
 ) {
   if (is.null(weights)) {
-    c <- 0 # if no weights, then assign zero confidence and zero eta
-    eta <- 0
-  } else if (is.null(eta)) {
-    # if missing eta space, assign by default
-    eta <- 0
+    c_space <- 0 # if no weights, then assign zero confidence and zero eta
+    E_space <- 0
+  } else if (is.null(E_space)) {
+    eta_max <- 0
     step_size <- 1
-    # Calculate initial bound to ensure it starts < 1; hard code sparsity to be 0.05 for upper bound
-    theta_bound <- 0.05 * max(weights)^eta / mean(weights^eta)
+    # Calculate initial bound to ensure it starts < 1
+    theta_bound <- 0.01 * max(weights)^eta_max / mean(weights^eta_max)
 
-    while (eta <= 19) {
-      eta <- eta + step_size # step forward
-      theta_bound <- 0.05 * max(weights)^eta / mean(weights^eta)
+    while (eta_max <= 20) {
+      eta_max <- eta_max + step_size # step forward
+      theta_bound <- 0.01 * max(weights)^eta_max / mean(weights^eta_max)
 
       # if threshold is crossed, backtrack with smaller steps
       if (theta_bound >= 1) {
         # Step back to the last safe value
-        eta <- eta - step_size
+        eta_max <- eta_max - step_size
 
         # Decrease the step size for finer searching
         if (step_size == 1) {
@@ -136,29 +136,33 @@ lsp_random_ss_gibbs_sampler <- function(
       }
     }
     # generate eta space
-    eta <- seq(1, eta, length.out = 10)
+    E_space <- seq(1, eta_max, length.out = 20)
+    rm(eta_max)
   }
 
   p <- ncol(X)
   n <- nrow(X)
 
   # number of values of eta and c in grid
-  K <- length(c) * length(eta)
+  K <- length(c_space) * length(E_space)
 
   # all c, eta values
-  cross_eta_c <- expand.grid(eta = eta, c = c)
+  cross_eta_c <- expand.grid(eta = E_space, c = c_space)
 
   # create space for u_mat (u*sparsity = theta)
   u_mat <- matrix(0, nrow = nrow(cross_eta_c), ncol = p)
 
   # eta and c are fixed
-  if (length(c) == 1 & length(eta) == 1) {
-    if (eta == 0 | c == 0) {
+  if (length(c_space) == 1 & length(E_space) == 1) {
+    if (E_space == 0 | c_space == 0) {
       init_weights <- FALSE
       u_mat[1, ] <- rep(1, p)
     } else {
       # create vector for prior model probability
-      u_mat[1, ] <- c * (weights^eta) / mean(weights^eta) + (1 - c)
+      u_mat[1, ] <- c_space *
+        (weights^E_space) /
+        mean(weights^E_space) +
+        (1 - c_space)
     }
   } else {
     # eta and c are random
@@ -230,6 +234,9 @@ lsp_random_ss_gibbs_sampler <- function(
       n *
       sum((y - cbind(1, X[, which(gam_current == 1)]) %*% beta_current)^2))
 
+  # initialize at prior mean of tau, protecting against non-positive values
+  tau_current <- min(1, b_tau / (a_tau - 1))
+
   # find current index of eta and c in discrete uniform grid
   if (K > 1) {
     c_eta_idx_current <- sample(K, 1)
@@ -293,7 +300,7 @@ lsp_random_ss_gibbs_sampler <- function(
       y,
       gam_prop,
       gam_current,
-      tau,
+      tau_current,
       a_sigma,
       b_sigma,
       s_current,
@@ -309,7 +316,7 @@ lsp_random_ss_gibbs_sampler <- function(
       chol_mat <- chol(
         invsigma_2_current *
           Z_new_gram +
-          (invsigma_2_current / tau) * diag(ncol(Z_new_gram))
+          (invsigma_2_current / tau_current) * diag(ncol(Z_new_gram))
       )
       invQ <- chol2inv(chol_mat)
       l <- invsigma_2_current * crossprod(Z_new, y)
@@ -324,6 +331,14 @@ lsp_random_ss_gibbs_sampler <- function(
         rate = 1 / 2 * sum((y - Z_new %*% beta_gamma)^2) + b_sigma
       )
 
+      # draw tau
+      tau_current <- 1 /
+        rgamma(
+          1,
+          shape = a_tau + (sum(gam_current) + 1) / 2,
+          b_tau + sum(beta_gamma^2) * invsigma_2_current / 2
+        )
+
       # count acceptances
       acc <- 1
     } else {
@@ -333,7 +348,7 @@ lsp_random_ss_gibbs_sampler <- function(
       chol_mat <- chol(
         invsigma_2_current *
           Z_old_gram +
-          (invsigma_2_current / tau) * diag(ncol(Z_old_gram))
+          (invsigma_2_current / tau_current) * diag(ncol(Z_old_gram))
       )
       invQ <- chol2inv(chol_mat)
       l <- invsigma_2_current * crossprod(Z_old, y)
@@ -347,6 +362,14 @@ lsp_random_ss_gibbs_sampler <- function(
         shape = n / 2 + a_sigma,
         rate = 1 / 2 * sum((y - Z_old %*% beta_gamma)^2) + b_sigma
       )
+
+      # draw tau
+      tau_current <- 1 /
+        rgamma(
+          1,
+          shape = a_tau + (sum(gam_current) + 1) / 2,
+          rate = b_tau + sum(beta_gamma^2) * invsigma_2_current / 2
+        )
 
       # count acceptances
       acc <- 0
