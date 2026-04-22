@@ -134,7 +134,7 @@ lsp_random_ss_gibbs_sampler <- function(
       }
     }
     # generate eta space
-    E_space <- seq(1, eta_max, length.out = 20)
+    E_space <- seq(0, eta_max, length.out = 21)
     rm(eta_max)
   }
 
@@ -396,7 +396,7 @@ lsp_random_ss_gibbs_sampler <- function(
         gam_current * log(theta_k) + (1 - gam_current) * log(1 - theta_k)
       )
 
-      # zero inflated prior, reduce weight for everything else:
+      # zero inflated prior, reduce weight for eta != 0:
       if (k != 1) {
         W[k] <- W[k] / (K - 1)
       }

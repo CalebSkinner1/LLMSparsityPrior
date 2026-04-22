@@ -11,7 +11,6 @@ lsp_random_ssl_map <- function(
   a_s = 1,
   b_s = NA,
   E_space = NULL,
-  c_space = NA,
   lambda1 = NULL,
   lambda0s = NULL,
   variance = "unknown",
@@ -24,7 +23,6 @@ lsp_random_ssl_map <- function(
   if (is.null(weights)) {
     weights <- rep(1, p)
     E_space <- 0
-    c_space <- 0
   } else if (is.null(E_space)) {
     eta_max <- 0
     step_size <- 1
@@ -51,7 +49,7 @@ lsp_random_ssl_map <- function(
       }
     }
     # generate eta space
-    E_space <- seq(1, eta_max, length.out = 20)
+    E_space <- seq(0, eta_max, length.out = 11)
     rm(eta_max)
   }
 
@@ -87,24 +85,22 @@ lsp_random_ssl_map <- function(
   # ── Pre-build all v_vec combinations once (memoize eta powers) ──────────
   # For each unique eta, weights^eta and mean(weights^eta) are computed once.
   eta_memo <- list() # keyed by as.character(eta_val)
-  all_combos <- vector("list", length(c_space) * length(E_space))
+  all_combos <- vector("list", length(E_space))
   idx <- 1L
-  for (c_val in c_space) {
-    for (eta_val in E_space) {
-      key <- as.character(eta_val)
-      if (is.null(eta_memo[[key]])) {
-        w_eta <- weights^eta_val
-        eta_memo[[key]] <- list(w_eta = w_eta, mean_w_eta = mean(w_eta))
-      }
-      memo <- eta_memo[[key]]
-      v_vec <- if (c_val == 0) {
-        rep(1.0, p)
-      } else {
-        c_val * (memo$w_eta / memo$mean_w_eta) + (1 - c_val)
-      }
-      all_combos[[idx]] <- list(c_val = c_val, eta_val = eta_val, v_vec = v_vec)
-      idx <- idx + 1L
+  for (eta_val in E_space) {
+    key <- as.character(eta_val)
+    if (is.null(eta_memo[[key]])) {
+      w_eta <- weights^eta_val
+      eta_memo[[key]] <- list(w_eta = w_eta, mean_w_eta = mean(w_eta))
     }
+    memo <- eta_memo[[key]]
+    v_vec <- if (eta_val == 0) {
+      rep(1.0, p)
+    } else {
+      (memo$w_eta / memo$mean_w_eta)
+    }
+    all_combos[[idx]] <- list(eta_val = eta_val, v_vec = v_vec)
+    idx <- idx + 1L
   }
 
   map_results <- find_MAP_hyperparams(
@@ -151,12 +147,12 @@ expectation_approx <- function(beta_vec, a_s, b_s) {
 
 # construct_v_vec is retained for any external callers, but inside the package
 # the memoized path in lsp_random_ssl_map() is used instead.
-construct_v_vec <- function(weights, c_val, eta) {
-  if (c_val == 0) {
+construct_v_vec <- function(weights, eta) {
+  if (eta == 0) {
     return(rep(1.0, length(weights)))
   }
   w_eta <- weights^eta
-  c_val * (w_eta / mean(w_eta)) + (1 - c_val)
+  (w_eta / mean(w_eta))
 }
 
 # Vectorised threshold — unchanged (already fast)
@@ -178,7 +174,7 @@ threshold_func_vec <- function(theta_vec, sigma2, lambda1, lambda0, xnorm_vec) {
   )
 }
 
-update_sigma2 <- function(r) sum(r^2) / length(r)
+update_sigma2 <- function(r, n) sum(r^2) / (n + 2)
 
 # Scalar SSL thresholding — unchanged (called per-coordinate, must stay scalar)
 SSL_thresholding <- function(
@@ -301,17 +297,27 @@ lsp_ssl_random_descent <- function(
   sigma2 <- sigma^2
   sigma2_init <- sigma^2
   estimate_sigma <- FALSE
-  theta_vec <- pmax(pmin(0.5 * v_vec, 1 - 1e-10), 1e-10)
+  theta_init <- a_s / (a_s + b_s + p)
+  theta_vec <- pmax(pmin(theta_init * v_vec, 1 - 1e-10), 1e-10)
   delta <- numeric(p)
 
   for (l in seq_len(L)) {
     lambda0 <- lambda0s[l]
 
+    # Theta / delta warm-start
+    if (l > 1L) {
+      s_val <- expectation_approx(b_mat[, l - 1L], a_s, b_s)
+      theta_vec <- pmax(pmin(s_val * v_vec, 1 - 1e-10), 1e-10)
+    }
+
+    delta <- threshold_func_vec(theta_vec, sigma2, lambda1, lambda0, xnorm)
+    e2 <- pmax(e2, as.integer(abs(z) > delta))
+
     # Sigma warm-start
     if (l > 1L && variance == "unknown") {
       if (iter_vec[l - 1L] < 100L) {
         estimate_sigma <- TRUE
-        sigma2_new <- update_sigma2(r)
+        sigma2_new <- update_sigma2(r, n)
         sigma2 <- if (sigma2_new < min_sigma2) {
           estimate_sigma <- FALSE
           sigma2_init
@@ -323,15 +329,6 @@ lsp_ssl_random_descent <- function(
         if (iter_vec[l - 1L] == max_iter) sigma2 <- sigma2_init
       }
     }
-
-    # Theta / delta warm-start
-    if (l > 1L) {
-      s_val <- expectation_approx(b_mat[, l - 1L], a_s, b_s)
-      theta_vec <- pmax(pmin(s_val * v_vec, 1 - 1e-10), 1e-10)
-    }
-
-    delta <- threshold_func_vec(theta_vec, sigma2, lambda1, lambda0, xnorm)
-    e2 <- pmax(e2, as.integer(abs(z) > delta))
 
     # active_counter tracks visits to *active* variables only, matching the
     # original intent of "fire every count_max coordinate updates that matter"
@@ -376,20 +373,8 @@ lsp_ssl_random_descent <- function(
             newa[j] <- b_val
           }
 
-          if (b_val == 0) {
-            e1[j] <- 0L
-          }
-
           # Periodic refresh — every count_max *active* updates
           if (active_counter == count_max) {
-            if (variance == "unknown" && estimate_sigma) {
-              sigma2_new <- update_sigma2(r)
-              if (sigma2_new >= min_sigma2) {
-                sigma2 <- sigma2_new
-              } else {
-                sigma2 <- sigma2_init
-              }
-            }
             s_val <- expectation_approx(b_mat[, l], a_s, b_s)
             theta_vec <- pmax(pmin(s_val * v_vec, 1 - 1e-10), 1e-10)
             delta <- threshold_func_vec(
@@ -399,13 +384,22 @@ lsp_ssl_random_descent <- function(
               lambda0,
               xnorm
             )
+            if (variance == "unknown" && estimate_sigma) {
+              sigma2_new <- update_sigma2(r, n)
+              sigma2 <- if (sigma2_new >= min_sigma2) {
+                sigma2_new
+              } else {
+                sigma2_init
+              }
+            }
             active_counter <- 0L
           }
         }
 
         # Sync a_vec
         if (large_p) {
-          a_vec <- b_mat[, l]
+          active_idx <- which(e1 == 1L)
+          a_vec[active_idx] <- b_mat[active_idx, l]
         } else {
           a_vec <- newa
           newa <- a_vec
@@ -418,9 +412,9 @@ lsp_ssl_random_descent <- function(
           av <- a_vec[check_idx]
           aov <- a_old[check_idx]
           den <- ifelse(
-            av != 0,
-            abs(av),
-            ifelse(aov != 0, abs(aov), .Machine$double.eps)
+            aov != 0,
+            abs(aov),
+            .Machine$double.eps
           )
           if (any(abs(av - aov) / den > eps)) converged_active <- FALSE
         }
@@ -429,6 +423,7 @@ lsp_ssl_random_descent <- function(
 
       # ── Strong-set violation scan ────────────────────────────────────────
       violations_strong <- 0L
+      active_counter <- 0L
       strong_cands <- which(e1 == 0L & e2 == 1L)
 
       for (j in strong_cands) {
@@ -462,14 +457,6 @@ lsp_ssl_random_descent <- function(
 
           active_counter <- active_counter + 1L
           if (active_counter == count_max) {
-            if (variance == "unknown" && estimate_sigma) {
-              sigma2_new <- update_sigma2(r)
-              if (sigma2_new >= min_sigma2) {
-                sigma2 <- sigma2_new
-              } else {
-                sigma2 <- sigma2_init
-              }
-            }
             s_val <- expectation_approx(b_mat[, l], a_s, b_s)
             theta_vec <- pmax(pmin(s_val * v_vec, 1 - 1e-10), 1e-10)
             delta <- threshold_func_vec(
@@ -479,6 +466,14 @@ lsp_ssl_random_descent <- function(
               lambda0,
               xnorm
             )
+            if (variance == "unknown" && estimate_sigma) {
+              sigma2_new <- update_sigma2(r, n)
+              if (sigma2_new >= min_sigma2) {
+                sigma2 <- sigma2_new
+              } else {
+                sigma2 <- sigma2_init
+              }
+            }
             active_counter <- 0L
           }
         }
@@ -489,6 +484,7 @@ lsp_ssl_random_descent <- function(
 
       # ── Rest violation scan ──────────────────────────────────────────────
       violations_rest <- 0L
+      active_counter <- 0L
       rest_cands <- which(e2 == 0L)
 
       for (j in rest_cands) {
@@ -521,14 +517,6 @@ lsp_ssl_random_descent <- function(
 
           active_counter <- active_counter + 1L
           if (active_counter == count_max) {
-            if (variance == "unknown" && estimate_sigma) {
-              sigma2_new <- update_sigma2(r)
-              if (sigma2_new >= min_sigma2) {
-                sigma2 <- sigma2_new
-              } else {
-                sigma2 <- sigma2_init
-              }
-            }
             s_val <- expectation_approx(b_mat[, l], a_s, b_s)
             theta_vec <- pmax(pmin(s_val * v_vec, 1 - 1e-10), 1e-10)
             delta <- threshold_func_vec(
@@ -538,6 +526,14 @@ lsp_ssl_random_descent <- function(
               lambda0,
               xnorm
             )
+            if (variance == "unknown" && estimate_sigma) {
+              sigma2_new <- update_sigma2(r, n)
+              if (sigma2_new >= min_sigma2) {
+                sigma2 <- sigma2_new
+              } else {
+                sigma2 <- sigma2_init
+              }
+            }
             active_counter <- 0L
           }
         }
@@ -546,7 +542,7 @@ lsp_ssl_random_descent <- function(
         next
       }
 
-      # ── Finalise ─────────────────────────────────────────────────────────
+      # ── Finalize ─────────────────────────────────────────────────────────
       if (!large_p) {
         r <- y - as.vector(X %*% a_vec)
       }
@@ -587,7 +583,7 @@ find_MAP_hyperparams <- function(
   weights,
   a_s,
   b_s,
-  all_combos, # pre-built list of list(c_val, eta_val, v_vec)
+  all_combos, # pre-built list of list(eta_val, v_vec)
   lambda1,
   lambda0s,
   initialbeta,
@@ -622,7 +618,6 @@ find_MAP_hyperparams <- function(
       count_max = count_max
     )
     all_paths[[ci]] <- list(
-      c_val = combo$c_val,
       eta_val = combo$eta_val,
       v_vec = combo$v_vec,
       res = res
@@ -641,7 +636,6 @@ find_MAP_hyperparams <- function(
     best_score <- -Inf
     best_params_l <- list(
       lambda0 = lambda0s[l],
-      c = NA,
       eta = NA,
       s = NA,
       beta = NULL,
@@ -671,6 +665,10 @@ find_MAP_hyperparams <- function(
         a_s = a_s,
         b_s = b_s
       )
+      # zero-inflate eta == 0, to give baseline model 50% prior probability
+      if (path$eta_val != 0) {
+        score <- score - log(length(all_paths) - 1)
+      }
 
       if (!is.finite(score)) {
         next
@@ -678,7 +676,6 @@ find_MAP_hyperparams <- function(
 
       if (score > best_score) {
         best_score <- score
-        best_params_l$c <- path$c_val
         best_params_l$eta <- path$eta_val
         best_params_l$s <- path$res$s_path[l]
         best_params_l$beta <- beta_l

@@ -10,7 +10,6 @@ lsp_fixed_ssl_map <- function(
   weights = NULL,
   s_fixed = 0.05,
   E_space = NULL,
-  c_space = NA,
   lambda1 = NULL,
   lambda0s = NULL,
   variance = "unknown",
@@ -23,7 +22,6 @@ lsp_fixed_ssl_map <- function(
   if (is.null(weights)) {
     weights <- rep(1, p)
     E_space <- 0
-    c_space <- 0
   } else if (is.null(E_space)) {
     eta_max <- 0
     step_size <- 1
@@ -50,7 +48,7 @@ lsp_fixed_ssl_map <- function(
       }
     }
     # generate eta space
-    E_space <- seq(1, eta_max, length.out = 20)
+    E_space <- seq(0, eta_max, length.out = 11)
     rm(eta_max)
   }
 
@@ -80,24 +78,22 @@ lsp_fixed_ssl_map <- function(
 
   # ── Pre-build all (c, eta) v_vecs once; memoize eta powers ──────────────
   eta_memo <- list()
-  all_combos <- vector("list", length(c_space) * length(E_space))
+  all_combos <- vector("list", length(E_space))
   idx <- 1L
-  for (c_val in c_space) {
-    for (eta_val in E_space) {
-      key <- as.character(eta_val)
-      if (is.null(eta_memo[[key]])) {
-        w_eta <- weights^eta_val
-        eta_memo[[key]] <- list(w_eta = w_eta, mean_w_eta = mean(w_eta))
-      }
-      memo <- eta_memo[[key]]
-      v_vec <- if (c_val == 0) {
-        rep(1.0, p)
-      } else {
-        c_val * (memo$w_eta / memo$mean_w_eta) + (1 - c_val)
-      }
-      all_combos[[idx]] <- list(c_val = c_val, eta_val = eta_val, v_vec = v_vec)
-      idx <- idx + 1L
+  for (eta_val in E_space) {
+    key <- as.character(eta_val)
+    if (is.null(eta_memo[[key]])) {
+      w_eta <- weights^eta_val
+      eta_memo[[key]] <- list(w_eta = w_eta, mean_w_eta = mean(w_eta))
     }
+    memo <- eta_memo[[key]]
+    v_vec <- if (eta_val == 0) {
+      rep(1.0, p)
+    } else {
+      (memo$w_eta / memo$mean_w_eta)
+    }
+    all_combos[[idx]] <- list(eta_val = eta_val, v_vec = v_vec)
+    idx <- idx + 1L
   }
 
   map_results <- find_MAP_fixed_hyperparams(
@@ -135,12 +131,12 @@ standardize <- function(X) {
   list(XX = XX, c = c_vec)
 }
 
-construct_v_vec <- function(weights, c_val, eta) {
-  if (c_val == 0) {
+construct_v_vec <- function(weights, eta) {
+  if (eta == 0) {
     return(rep(1.0, length(weights)))
   }
   w_eta <- weights^eta
-  c_val * (w_eta / mean(w_eta)) + (1 - c_val)
+  (w_eta / mean(w_eta))
 }
 
 threshold_func_vec <- function(theta_vec, sigma2, lambda1, lambda0, xnorm_vec) {
@@ -158,7 +154,7 @@ threshold_func_vec <- function(theta_vec, sigma2, lambda1, lambda0, xnorm_vec) {
   )
 }
 
-update_sigma2 <- function(r) sum(r^2) / length(r)
+update_sigma2 <- function(r) sum(r^2) / (length(r) + 2)
 
 SSL_thresholding <- function(
   z,
@@ -348,10 +344,6 @@ lsp_ssl_fixed_descent <- function(
             if (shift != 0) r <- r - shift * X[, j]
           } else {
             newa[j] <- b_val
-          }
-
-          if (b_val == 0) {
-            e1[j] <- 0L
           }
 
           # Periodic refresh every count_max *active* updates.
@@ -581,7 +573,6 @@ find_MAP_fixed_hyperparams <- function(
       count_max = count_max
     )
     all_paths[[ci]] <- list(
-      c_val = combo$c_val,
       eta_val = combo$eta_val,
       v_vec = combo$v_vec,
       res = res
@@ -595,7 +586,6 @@ find_MAP_fixed_hyperparams <- function(
     best_score <- -Inf
     best_params_l <- list(
       lambda0 = lambda0s[l],
-      c = NA,
       eta = NA,
       s = s_fixed,
       beta = NULL,
@@ -625,13 +615,17 @@ find_MAP_fixed_hyperparams <- function(
         s_fixed = s_fixed
       )
 
+      # zero-inflate eta == 0, to give baseline model 50% prior probability
+      if (path$eta_val != 0) {
+        score <- score - log(length(all_paths) - 1)
+      }
+
       if (!is.finite(score)) {
         next
       }
 
       if (score > best_score) {
         best_score <- score
-        best_params_l$c <- path$c_val
         best_params_l$eta <- path$eta_val
         best_params_l$beta <- beta_l
         best_params_l$sigma <- sigma_l
