@@ -2685,3 +2685,78 @@ sim_function <- function(baseline_fits, weights) {
 
   return(metrics)
 }
+
+eta_sensitivity_function <- function(seed, weights, set_eta) {
+  # generate X and coefficients
+  set.seed(seed)
+  # generate X and coefficients
+  X <- MASS::mvrnorm(n, mu = rep(0, p), Xvar * cov_mat)
+  beta <- c(rep(0, p - s), rep(effect_size, s))
+  alpha <- effect_size
+
+  # generate y
+  y <- X %*% beta + alpha + rnorm(n, 0, sd = y_sd)
+
+  if (fixed_s == TRUE) {
+    # run LSP for SS with fixed sparsity
+    all_fits$`lsp, fixed s` <- lsp_fixed_ss_gibbs_sampler(
+      X,
+      y,
+      weights,
+      sparsity = sparsity,
+      E_space = set_eta,
+      a_sigma = a_sigma,
+      b_sigma = b_sigma,
+      tau = tau,
+      iter = iter,
+      burn_in = burn_in,
+      init_weights = TRUE,
+      return_samples = FALSE
+    )
+
+    # run LSP for SSL with fixed sparsity
+    all_fits$`lsp, ssl fixed s` <- lsp_fixed_ssl_map(
+      X,
+      y,
+      E_space = set_eta,
+      weights = weights,
+      s_fixed = sparsity
+    ) |>
+      select_lambda0_bic(X = X, y = y)
+  }
+
+  # can also evaluate LSP with random sparsity
+  if (random_s == TRUE) {
+    # run LSP with random sparsity
+    all_fits$`lsp, random s` <- lsp_random_ss_gibbs_sampler(
+      X,
+      y,
+      weights,
+      E_space = set_eta,
+      a_sigma = a_sigma,
+      b_sigma = b_sigma,
+      tau = tau,
+      iter = iter,
+      burn_in = burn_in,
+      init_weights = TRUE,
+      return_samples = FALSE
+    )
+
+    # run LSP for SSL with fixed sparsity
+    all_fits$`lsp, ssl random s` <- lsp_random_ssl_map(
+      X,
+      y,
+      E_space = set_eta,
+      weights = weights
+    ) |>
+      select_lambda0_bic(X = X, y = y)
+  }
+
+  # return metrics
+  metrics <- map(
+    all_fits,
+    ~ compile_model_metrics(.x, weights, alpha, beta)
+  )
+
+  return(metrics)
+}
