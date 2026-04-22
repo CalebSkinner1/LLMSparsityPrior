@@ -7,8 +7,8 @@
 lsp_fixed_ssl_map <- function(
   X,
   y,
-  weights,
-  s_fixed = 0.5,
+  weights = NULL,
+  s_fixed = 0.05,
   E_space = NULL,
   c_space = NA,
   lambda1 = NULL,

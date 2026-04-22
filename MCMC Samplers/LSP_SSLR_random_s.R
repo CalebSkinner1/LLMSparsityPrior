@@ -7,7 +7,7 @@
 lsp_random_ssl_map <- function(
   X,
   y,
-  weights,
+  weights = NULL,
   a_s = 1,
   b_s = NA,
   E_space = NULL,
