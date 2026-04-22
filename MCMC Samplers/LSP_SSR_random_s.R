@@ -90,12 +90,10 @@ lsp_random_ss_gibbs_sampler <- function(
   X,
   y,
   weights = NULL,
-  c_space = NA,
   E_space = NULL,
   a_sigma = 1,
   b_sigma = 1,
-  a_tau = 2,
-  b_tau = 1,
+  tau = 1,
   a_s = 1,
   b_s = NA,
   s_proposal_sigma = 1,
@@ -108,7 +106,7 @@ lsp_random_ss_gibbs_sampler <- function(
   return_samples = TRUE
 ) {
   if (is.null(weights)) {
-    c_space <- 0 # if no weights, then assign zero confidence and zero eta
+    # if no weights, then assign zero E_space
     E_space <- 0
   } else if (is.null(E_space)) {
     eta_max <- 0
@@ -143,34 +141,29 @@ lsp_random_ss_gibbs_sampler <- function(
   p <- ncol(X)
   n <- nrow(X)
 
-  # number of values of eta and c in grid
-  K <- length(c_space) * length(E_space)
-
-  # all c, eta values
-  cross_eta_c <- expand.grid(eta = E_space, c = c_space)
+  # number of values of eta
+  K <- length(E_space)
 
   # create space for u_mat (u*sparsity = theta)
-  u_mat <- matrix(0, nrow = nrow(cross_eta_c), ncol = p)
+  u_mat <- matrix(0, nrow = K, ncol = p)
 
-  # eta and c are fixed
-  if (length(c_space) == 1 & length(E_space) == 1) {
-    if (E_space == 0 | c_space == 0) {
+  # if eta is fixed
+  if (length(E_space) == 1) {
+    if (E_space == 0) {
       init_weights <- FALSE
       u_mat[1, ] <- rep(1, p)
     } else {
       # create vector for prior model probability
-      u_mat[1, ] <- c_space *
+      u_mat[1, ] <-
         (weights^E_space) /
-        mean(weights^E_space) +
-        (1 - c_space)
+        mean(weights^E_space)
     }
   } else {
-    # eta and c are random
-    for (k in 1:nrow(cross_eta_c)) {
-      c_k <- cross_eta_c$c[k]
-      eta_k <- cross_eta_c$eta[k]
+    # eta are random
+    for (k in 1:K) {
+      eta_k <- E_space[k]
 
-      u_mat[k, ] <- c_k * (weights^eta_k) / mean((weights^eta_k)) + (1 - c_k)
+      u_mat[k, ] <- (weights^eta_k) / mean((weights^eta_k))
     }
   }
 
@@ -189,7 +182,6 @@ lsp_random_ss_gibbs_sampler <- function(
     invsigma_2_store <- rep(0, n_keep)
     acc_store <- rep(0, n_keep)
     eta_store <- rep(0, n_keep)
-    c_store <- rep(0, n_keep)
     s_store <- rep(0, n_keep)
     acc_s_store <- rep(0, n_keep)
   } else {
@@ -199,7 +191,6 @@ lsp_random_ss_gibbs_sampler <- function(
     invsigma_2_mean <- 0
     acc_mean <- 0
     eta_mean <- 0
-    c_mean <- 0
     s_mean <- 0
     acc_s_mean <- 0
   }
@@ -234,14 +225,11 @@ lsp_random_ss_gibbs_sampler <- function(
       n *
       sum((y - cbind(1, X[, which(gam_current == 1)]) %*% beta_current)^2))
 
-  # initialize at prior mean of tau, protecting against non-positive values
-  tau_current <- min(1, b_tau / (a_tau - 1))
-
-  # find current index of eta and c in discrete uniform grid
+  # find current index of eta in discrete uniform grid
   if (K > 1) {
-    c_eta_idx_current <- sample(K, 1)
+    eta_idx_current <- sample(K, 1)
   } else {
-    c_eta_idx_current <- 1
+    eta_idx_current <- 1
   }
 
   # begin iterations
@@ -300,11 +288,11 @@ lsp_random_ss_gibbs_sampler <- function(
       y,
       gam_prop,
       gam_current,
-      tau_current,
+      tau,
       a_sigma,
       b_sigma,
       s_current,
-      u_mat[c_eta_idx_current, ],
+      u_mat[eta_idx_current, ],
       n
     ) +
       log_prop_ratio
@@ -316,7 +304,7 @@ lsp_random_ss_gibbs_sampler <- function(
       chol_mat <- chol(
         invsigma_2_current *
           Z_new_gram +
-          (invsigma_2_current / tau_current) * diag(ncol(Z_new_gram))
+          (invsigma_2_current / tau) * diag(ncol(Z_new_gram))
       )
       invQ <- chol2inv(chol_mat)
       l <- invsigma_2_current * crossprod(Z_new, y)
@@ -331,14 +319,6 @@ lsp_random_ss_gibbs_sampler <- function(
         rate = 1 / 2 * sum((y - Z_new %*% beta_gamma)^2) + b_sigma
       )
 
-      # draw tau
-      tau_current <- 1 /
-        rgamma(
-          1,
-          shape = a_tau + (sum(gam_current) + 1) / 2,
-          b_tau + sum(beta_gamma^2) * invsigma_2_current / 2
-        )
-
       # count acceptances
       acc <- 1
     } else {
@@ -348,7 +328,7 @@ lsp_random_ss_gibbs_sampler <- function(
       chol_mat <- chol(
         invsigma_2_current *
           Z_old_gram +
-          (invsigma_2_current / tau_current) * diag(ncol(Z_old_gram))
+          (invsigma_2_current / tau) * diag(ncol(Z_old_gram))
       )
       invQ <- chol2inv(chol_mat)
       l <- invsigma_2_current * crossprod(Z_old, y)
@@ -363,14 +343,6 @@ lsp_random_ss_gibbs_sampler <- function(
         rate = 1 / 2 * sum((y - Z_old %*% beta_gamma)^2) + b_sigma
       )
 
-      # draw tau
-      tau_current <- 1 /
-        rgamma(
-          1,
-          shape = a_tau + (sum(gam_current) + 1) / 2,
-          rate = b_tau + sum(beta_gamma^2) * invsigma_2_current / 2
-        )
-
       # count acceptances
       acc <- 0
     }
@@ -380,7 +352,7 @@ lsp_random_ss_gibbs_sampler <- function(
     logit_s_new <- rnorm(1, mean = logit_s, sd = s_proposal_sigma)
     s_new <- 1 / (1 + exp(-logit_s_new))
 
-    if (max(s_new * u_mat[c_eta_idx_current, ]) >= 1) {
+    if (max(s_new * u_mat[eta_idx_current, ]) >= 1) {
       accept_s <- FALSE
     } else {
       # compute posterior ratio for s
@@ -390,12 +362,12 @@ lsp_random_ss_gibbs_sampler <- function(
       log_lik_s_new <- compute_log_prior_gamma(
         gam_current,
         s_new,
-        u_mat[c_eta_idx_current, ]
+        u_mat[eta_idx_current, ]
       )
       log_lik_s_old <- compute_log_prior_gamma(
         gam_current,
         s_current,
-        u_mat[c_eta_idx_current, ]
+        u_mat[eta_idx_current, ]
       )
 
       # jacobian adjustment
@@ -414,36 +386,35 @@ lsp_random_ss_gibbs_sampler <- function(
       }
     }
 
-    # draw new c and eta based on gamma
+    # draw new eta based on gamma
 
-    # unnormalized log probability for all K states of eta and c
+    # unnormalized log probability for all K states of eta
     W <- numeric(K)
     for (k in 1:K) {
       theta_k <- pmin(pmax(s_current * u_mat[k, ], 1e-4), 1 - 1e-4)
       W[k] <- sum(
         gam_current * log(theta_k) + (1 - gam_current) * log(1 - theta_k)
       )
+
+      # zero inflated prior, reduce weight for everything else:
+      if (k != 1) {
+        W[k] <- W[k] / (K - 1)
+      }
     }
     # normalize probabilities
     # log-sum-exp trick to prevent NaN underflow
-    pi_eta_c <- exp(W - max(W)) / sum(exp(W - max(W)))
-    c_eta_idx_current <- sample(K, 1, prob = pi_eta_c)
+    pi_eta <- exp(W - max(W)) / sum(exp(W - max(W)))
+    eta_idx_current <- sample(K, 1, prob = pi_eta)
 
     # store parameters
     if (i > burn_in && (i - burn_in) %% thin == 0) {
-      c_val <- cross_eta_c$c[c_eta_idx_current]
       if (return_samples) {
         store_i <- (i - burn_in) / thin # index
 
         gam_store[store_i, ] <- gam_current
         beta_store[store_i, ] <- beta_current
         invsigma_2_store[store_i] <- invsigma_2_current
-        c_store[store_i] <- c_val
-        eta_store[store_i] <- if (c_val == 0) {
-          0
-        } else {
-          cross_eta_c$eta[c_eta_idx_current]
-        }
+        eta_store[store_i] <- E_space[eta_idx_current]
         s_store[store_i] <- s_current
         acc_store[store_i] <- acc
         acc_s_store[store_i] <- accept_s
@@ -451,12 +422,7 @@ lsp_random_ss_gibbs_sampler <- function(
         gam_mean <- gam_mean + gam_current / n_keep
         beta_mean <- beta_mean + beta_current / n_keep
         invsigma_2_mean <- invsigma_2_mean + invsigma_2_current / n_keep
-        c_mean <- c_mean + c_val / n_keep
-        eta_mean <- if (c_val == 0) {
-          eta_mean
-        } else {
-          eta_mean + cross_eta_c$eta[c_eta_idx_current] / n_keep
-        }
+        eta_mean <- E_space[c_eta_idx_current] / n_keep
         s_mean <- s_mean + s_current / n_keep
         acc_mean <- acc_mean + acc / n_keep
         acc_s_mean <- acc_s_mean + accept_s / n_keep
@@ -470,7 +436,6 @@ lsp_random_ss_gibbs_sampler <- function(
       "gamma" = gam_store,
       "invsigma_2" = invsigma_2_store,
       "eta" = eta_store,
-      "c" = c_store,
       "s" = s_store,
       "accs" = acc_store,
       "acc_s" = acc_s_store
@@ -481,7 +446,6 @@ lsp_random_ss_gibbs_sampler <- function(
       "gamma" = gam_mean,
       "invsigma_2" = invsigma_2_mean,
       "eta" = eta_mean,
-      "c" = c_mean,
       "s" = s_mean,
       "accs" = acc_mean,
       "acc_s" = acc_s_mean
