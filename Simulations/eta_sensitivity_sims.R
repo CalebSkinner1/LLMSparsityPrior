@@ -5,7 +5,7 @@ source("weight_quality_support.R")
 # simulation settings -----------------------------------------------------
 
 p <- 1000
-n_range <- c(100, 250)
+n <- 100
 s <- 20
 true_gamma <- c(rep(0, p - s), rep(1, s))
 effect_size <- 1
@@ -18,7 +18,7 @@ a_sigma <- 1
 b_sigma <- 1
 tau <- 1
 sparsity <- 0.01
-eta_range <- seq(by = 1, from = 1, to = 20)
+eta_range <- NULL
 iter <- 30000
 burn_in <- 5000
 random_s <- TRUE

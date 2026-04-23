@@ -18,8 +18,7 @@ a_sigma <- 1
 b_sigma <- 1
 tau <- 1
 sparsity <- 0.01
-eta_range <- seq(by = 1, from = 1, to = 10)
-confidence_range <- c(0, 1)
+eta_range <- NULL
 iter <- 30000
 burn_in <- 5000
 random_s <- TRUE
