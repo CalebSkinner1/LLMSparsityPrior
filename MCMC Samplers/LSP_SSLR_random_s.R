@@ -310,9 +310,6 @@ lsp_ssl_random_descent <- function(
       theta_vec <- pmax(pmin(s_val * v_vec, 1 - 1e-10), 1e-10)
     }
 
-    delta <- threshold_func_vec(theta_vec, sigma2, lambda1, lambda0, xnorm)
-    e2 <- pmax(e2, as.integer(abs(z) > delta))
-
     # Sigma warm-start
     if (l > 1L && variance == "unknown") {
       if (iter_vec[l - 1L] < 100L) {
@@ -329,6 +326,9 @@ lsp_ssl_random_descent <- function(
         if (iter_vec[l - 1L] == max_iter) sigma2 <- sigma2_init
       }
     }
+
+    delta <- threshold_func_vec(theta_vec, sigma2, lambda1, lambda0, xnorm)
+    e2 <- pmax(e2, as.integer(abs(z) > delta))
 
     # active_counter tracks visits to *active* variables only, matching the
     # original intent of "fire every count_max coordinate updates that matter"
@@ -538,9 +538,9 @@ lsp_ssl_random_descent <- function(
           }
         }
       }
-      if (violations_rest > 0L) {
-        next
-      }
+      # if (violations_rest > 0L) {
+      #   next
+      # }
 
       # ── Finalize ─────────────────────────────────────────────────────────
       if (!large_p) {

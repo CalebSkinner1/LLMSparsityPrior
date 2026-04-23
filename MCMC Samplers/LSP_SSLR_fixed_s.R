@@ -25,19 +25,15 @@ lsp_fixed_ssl_map <- function(
   } else if (is.null(E_space)) {
     eta_max <- 0
     step_size <- 1
-    # Calculate initial bound to ensure it starts < 1
     theta_bound <- s_fixed * max(weights)^eta_max / mean(weights^eta_max)
 
     while (eta_max <= 20) {
-      eta_max <- eta_max + step_size # step forward
+      eta_max <- eta_max + step_size
       theta_bound <- s_fixed * max(weights)^eta_max / mean(weights^eta_max)
 
-      # if threshold is crossed, backtrack with smaller steps
       if (theta_bound >= 1) {
-        # Step back to the last safe value
         eta_max <- eta_max - step_size
 
-        # Decrease the step size for finer searching
         if (step_size == 1) {
           step_size <- 0.1
         } else if (step_size == 0.1) {
@@ -47,7 +43,6 @@ lsp_fixed_ssl_map <- function(
         }
       }
     }
-    # generate eta space
     E_space <- seq(0, eta_max, length.out = 11)
     rm(eta_max)
   }
@@ -64,7 +59,6 @@ lsp_fixed_ssl_map <- function(
     lambda0s <- seq(lambda1, n, length.out = 100)
   }
 
-  # Sigma initialisation
   df <- 3
   sigquant <- 0.9
   sigest <- sd(yy)
@@ -76,7 +70,6 @@ lsp_fixed_ssl_map <- function(
   initialbeta <- rep(0, p)
   count_max <- 10L
 
-  # ── Pre-build all (c, eta) v_vecs once; memoize eta powers ──────────────
   eta_memo <- list()
   all_combos <- vector("list", length(E_space))
   idx <- 1L
@@ -154,7 +147,8 @@ threshold_func_vec <- function(theta_vec, sigma2, lambda1, lambda0, xnorm_vec) {
   )
 }
 
-update_sigma2 <- function(r) sum(r^2) / (length(r) + 2)
+# n + 2 denominator matches the C reference's Bayesian sigma estimator
+update_sigma2_fixed <- function(r) sum(r^2) / (length(r) + 2)
 
 SSL_thresholding <- function(
   z,
@@ -182,8 +176,6 @@ SSL_thresholding <- function(
   if (temp > 0) sign(z) * temp / norm else 0
 }
 
-# Fixed-s log-posterior: s_fixed is a constant so the s prior is omitted.
-# term1 + term2 fused into one vectorised expression to cut allocations.
 compute_log_posterior_fixed <- function(
   y,
   X,
@@ -197,8 +189,7 @@ compute_log_posterior_fixed <- function(
   n <- length(y)
   sig2 <- sigma_final^2
 
-  # theta_vec is constant for the entire run
-  if (length(s_fixed) == p) {
+  if (length(s_fixed) == ncol(X)) {
     theta_v <- pmax(pmin(s_fixed, 1 - 1e-10), 1e-10)
   } else {
     theta_v <- pmax(pmin(s_fixed * v_vec, 1 - 1e-10), 1e-10)
@@ -257,7 +248,6 @@ lsp_ssl_fixed_descent <- function(
   r <- y - as.vector(X %*% a_vec)
   z <- as.vector(crossprod(X, r))
 
-  # Computation strategy decided once
   thres <- min(n, max_iter)
   large_p <- p >= thres
   if (!large_p) {
@@ -271,7 +261,7 @@ lsp_ssl_fixed_descent <- function(
   sigma2_init <- sigma^2
   estimate_sigma <- FALSE
 
-  # theta_vec is constant for the entire run — computed once here
+  # theta_vec is constant for the entire run — computed once
   if (length(s_fixed) == p) {
     theta_vec <- pmax(pmin(s_fixed, 1 - 1e-10), 1e-10)
   } else {
@@ -283,11 +273,13 @@ lsp_ssl_fixed_descent <- function(
   for (l in seq_len(L)) {
     lambda0 <- lambda0s[l]
 
-    # Sigma warm-start
+    # ── Sigma warm-start ─────────────────────────────────────────────────
+    # Matches C ordering: sigma updated before delta at the lambda level.
+    # theta_vec is constant so no theta warm-start is needed.
     if (l > 1L && variance == "unknown") {
       if (iter_vec[l - 1L] < 100L) {
         estimate_sigma <- TRUE
-        sigma2_new <- update_sigma2(r)
+        sigma2_new <- update_sigma2_fixed(r)
         if (sigma2_new < min_sigma2) {
           sigma2 <- sigma2_init
           estimate_sigma <- FALSE
@@ -300,11 +292,10 @@ lsp_ssl_fixed_descent <- function(
       }
     }
 
-    # delta must update on every new lambda0 (lambda0 always changes)
+    # delta uses updated sigma and constant theta_vec
     delta <- threshold_func_vec(theta_vec, sigma2, lambda1, lambda0, xnorm)
     e2 <- pmax(e2, as.integer(abs(z) > delta))
 
-    # active_counter: only increments on active-variable visits
     active_counter <- 0L
 
     # ── Outer while ─────────────────────────────────────────────────────────
@@ -346,48 +337,45 @@ lsp_ssl_fixed_descent <- function(
             newa[j] <- b_val
           }
 
-          # Periodic refresh every count_max *active* updates.
-          # theta_vec is constant, so delta is only recomputed when sigma2
-          # actually changes — saves a full length-p vectorised call otherwise.
+          # ── count_max refresh ──────────────────────────────────────────
+          # Ordering matches C: delta with OLD sigma first, then sigma update.
+          # theta_vec is constant so no theta recomputation needed.
           if (active_counter == count_max) {
+            delta <- threshold_func_vec(
+              theta_vec,
+              sigma2,
+              lambda1,
+              lambda0,
+              xnorm
+            )
             if (variance == "unknown" && estimate_sigma) {
-              sigma2_new <- update_sigma2(r)
-              if (sigma2_new >= min_sigma2) {
-                sigma2 <- sigma2_new
-                delta <- threshold_func_vec(
-                  theta_vec,
-                  sigma2,
-                  lambda1,
-                  lambda0,
-                  xnorm
-                )
+              sigma2_new <- update_sigma2_fixed(r)
+              sigma2 <- if (sigma2_new >= min_sigma2) {
+                sigma2_new
               } else {
-                sigma2 <- sigma2_init
+                sigma2_init
               }
             }
             active_counter <- 0L
           }
         }
 
-        # Sync a_vec
+        # Sync a_vec — partial sync matching C: only update visited coordinates
         if (large_p) {
-          a_vec <- b_mat[, l]
+          active_idx <- which(e1 == 1L)
+          a_vec[active_idx] <- b_mat[active_idx, l]
         } else {
           a_vec <- newa
           newa <- a_vec
         }
 
-        # Convergence check — single-pass vectorised denominator
+        # Convergence check — denominator uses a_old matching C's beta_old[j]
         check_idx <- which(e1 == 1L | a_old != 0)
         converged_active <- TRUE
         if (length(check_idx) > 0L) {
           av <- a_vec[check_idx]
           aov <- a_old[check_idx]
-          den <- ifelse(
-            av != 0,
-            abs(av),
-            ifelse(aov != 0, abs(aov), .Machine$double.eps)
-          )
+          den <- ifelse(aov != 0, abs(aov), .Machine$double.eps)
           if (any(abs(av - aov) / den > eps)) converged_active <- FALSE
         }
         if (converged_active) break
@@ -395,6 +383,7 @@ lsp_ssl_fixed_descent <- function(
 
       # ── Strong-set violation scan ────────────────────────────────────────
       violations_strong <- 0L
+      active_counter <- 0L
       strong_cands <- which(e1 == 0L & e2 == 1L)
 
       for (j in strong_cands) {
@@ -427,19 +416,19 @@ lsp_ssl_fixed_descent <- function(
 
           active_counter <- active_counter + 1L
           if (active_counter == count_max) {
+            delta <- threshold_func_vec(
+              theta_vec,
+              sigma2,
+              lambda1,
+              lambda0,
+              xnorm
+            )
             if (variance == "unknown" && estimate_sigma) {
-              sigma2_new <- update_sigma2(r)
-              if (sigma2_new >= min_sigma2) {
-                sigma2 <- sigma2_new
-                delta <- threshold_func_vec(
-                  theta_vec,
-                  sigma2,
-                  lambda1,
-                  lambda0,
-                  xnorm
-                )
+              sigma2_new <- update_sigma2_fixed(r)
+              sigma2 <- if (sigma2_new >= min_sigma2) {
+                sigma2_new
               } else {
-                sigma2 <- sigma2_init
+                sigma2_init
               }
             }
             active_counter <- 0L
@@ -451,7 +440,10 @@ lsp_ssl_fixed_descent <- function(
       }
 
       # ── Rest violation scan ──────────────────────────────────────────────
+      # NOTE: no `next` after this scan — matches C's local variable shadowing
+      # which causes the outer while to always exit after the rest scan.
       violations_rest <- 0L
+      active_counter <- 0L
       rest_cands <- which(e2 == 0L)
 
       for (j in rest_cands) {
@@ -484,28 +476,26 @@ lsp_ssl_fixed_descent <- function(
 
           active_counter <- active_counter + 1L
           if (active_counter == count_max) {
+            delta <- threshold_func_vec(
+              theta_vec,
+              sigma2,
+              lambda1,
+              lambda0,
+              xnorm
+            )
             if (variance == "unknown" && estimate_sigma) {
-              sigma2_new <- update_sigma2(r)
-              if (sigma2_new >= min_sigma2) {
-                sigma2 <- sigma2_new
-                delta <- threshold_func_vec(
-                  theta_vec,
-                  sigma2,
-                  lambda1,
-                  lambda0,
-                  xnorm
-                )
+              sigma2_new <- update_sigma2_fixed(r)
+              sigma2 <- if (sigma2_new >= min_sigma2) {
+                sigma2_new
               } else {
-                sigma2 <- sigma2_init
+                sigma2_init
               }
             }
             active_counter <- 0L
           }
         }
       }
-      if (violations_rest > 0L) {
-        next
-      }
+      # No next here — always fall through to finalise, matching C behaviour
 
       # ── Finalise ─────────────────────────────────────────────────────────
       if (!large_p) {
@@ -517,7 +507,7 @@ lsp_ssl_fixed_descent <- function(
       break
     }
 
-    # Fallback
+    # Fallback if max_iter reached without break
     if (is.na(loss[l])) {
       if (!large_p) {
         r <- y - as.vector(X %*% a_vec)
@@ -553,7 +543,6 @@ find_MAP_fixed_hyperparams <- function(
   L <- length(lambda0s)
   n_c <- length(all_combos)
 
-  # Run all (c, eta) paths
   all_paths <- vector("list", n_c)
   for (ci in seq_len(n_c)) {
     combo <- all_combos[[ci]]
@@ -579,7 +568,6 @@ find_MAP_fixed_hyperparams <- function(
     )
   }
 
-  # Cross-sectional MAP selection
   best_path_results <- vector("list", L)
 
   for (l in seq_len(L)) {
