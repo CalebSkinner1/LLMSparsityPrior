@@ -422,7 +422,7 @@ lsp_random_ss_gibbs_sampler <- function(
         gam_mean <- gam_mean + gam_current / n_keep
         beta_mean <- beta_mean + beta_current / n_keep
         invsigma_2_mean <- invsigma_2_mean + invsigma_2_current / n_keep
-        eta_mean <- E_space[c_eta_idx_current] / n_keep
+        eta_mean <- E_space[eta_idx_current] / n_keep
         s_mean <- s_mean + s_current / n_keep
         acc_mean <- acc_mean + acc / n_keep
         acc_s_mean <- acc_s_mean + accept_s / n_keep
