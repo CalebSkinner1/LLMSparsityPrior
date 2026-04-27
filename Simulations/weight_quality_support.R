@@ -369,20 +369,22 @@ llm_lasso_simp <- function(
 }
 
 select_lambda0_bic <- function(ssl_object, X, y) {
+  n <- length(y)
+
   rss <- apply(
-    t(do.call(rbind, purrr::transpose(ssl_object)$beta)),
+    ssl_object$beta,
     2,
     function(b) sum((y - X %*% b)^2)
   )
   df <- apply(
-    t(do.call(rbind, purrr::transpose(ssl_object)$beta)),
+    ssl_object$beta,
     2,
     function(b) sum(b != 0)
   )
   bic <- n * log(rss / n) + df * log(n)
   best_idx <- which.min(bic)
 
-  c(ssl_object[[best_idx]]$intercept, ssl_object[[best_idx]]$beta)
+  c(ssl_object$intercept[, best_idx], ssl_object$beta[, best_idx])
 }
 
 # simulation function -----------------------------------------------------
@@ -444,7 +446,7 @@ baseline_data_sim_function <- function(seed, n) {
       E_space = 0,
       weights = NULL,
       penalty = "separable",
-      variance = "unknown",
+      variance = "fixed",
       sparsity = sparsity
     ) |>
       select_lambda0_bic(X = X, y = y)
@@ -472,7 +474,7 @@ baseline_data_sim_function <- function(seed, n) {
       E_space = 0,
       weights = NULL,
       penalty = "adaptive",
-      variance = "unknown"
+      variance = "fixed"
     ) |>
       select_lambda0_bic(X = X, y = y)
   }
@@ -526,7 +528,7 @@ sim_function <- function(baseline_fits, weights) {
       E_space = eta_range,
       weights = weights,
       penalty = "separable",
-      variance = "unknown",
+      variance = "fixed",
       sparsity = sparsity
     ) |>
       select_lambda0_bic(X = X, y = y)
@@ -556,7 +558,7 @@ sim_function <- function(baseline_fits, weights) {
       E_space = eta_range,
       weights = weights,
       penalty = "adaptive",
-      variance = "unknown"
+      variance = "fixed"
     ) |>
       select_lambda0_bic(X = X, y = y)
   }
@@ -605,7 +607,7 @@ eta_sensitivity_function <- function(seed, weights, set_eta) {
       E_space = set_eta,
       weights = weights,
       penalty = "separable",
-      variance = "unknown",
+      variance = "fixed",
       sparsity = sparsity
     ) |>
       select_lambda0_bic(X = X, y = y)
@@ -635,7 +637,7 @@ eta_sensitivity_function <- function(seed, weights, set_eta) {
       E_space = set_eta,
       weights = weights,
       penalty = "adaptive",
-      variance = "unknown"
+      variance = "fixed"
     ) |>
       select_lambda0_bic(X = X, y = y)
   }
