@@ -121,7 +121,7 @@ lsp_fixed_ss_gibbs_sampler <- function(
       }
     }
     # generate eta space
-    E_space <- seq(0, eta_max, length.out = 21)
+    E_space <- seq(0, eta_max, length.out = 11)
     rm(eta_max)
   }
 

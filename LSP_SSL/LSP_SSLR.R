@@ -17,6 +17,7 @@ lsp_ssl_map <- function(
   y,
   weights = NULL,
   E_space = NULL,
+  eta_zero_mass = 0.5, # prior mass on eta = 0
   penalty = c("adaptive", "separable"),
   variance = c("fixed", "unknown"),
   lambda1,
@@ -105,7 +106,7 @@ lsp_ssl_map <- function(
         }
       }
     }
-    E_space <- seq(0, eta_max, length.out = 21)
+    E_space <- seq(0, eta_max, length.out = 11)
     rm(eta_max)
   } else {
     # validate given E_space
@@ -193,6 +194,13 @@ lsp_ssl_map <- function(
   best_eta <- numeric(nlambda) # stores the selected eta value per lambda0
 
   for (l in seq_len(nlambda)) {
+    # Use the baseline sigma as a common reference for all eta comparisons
+    sigma_ref <- eta_results[[which(E_space == 0)]]$sigmas[l]
+    # Fall back to first run if 0 is not in E_space
+    if (length(sigma_ref) == 0 || is.nan(sigma_ref)) {
+      sigma_ref <- eta_results[[1]]$sigmas[l]
+    }
+
     log_posts <- vapply(
       seq_len(n_eta),
       function(e) {
@@ -200,7 +208,7 @@ lsp_ssl_map <- function(
           y = yy,
           X = XX,
           beta_final = eta_results[[e]]$bb[, l],
-          sigma_final = eta_results[[e]]$sigmas[l],
+          sigma_final = sigma_ref,
           v_vec = eta_results[[e]]$v_vec,
           lambda1 = lambda1,
           lambda0_final = lambda0[l],
@@ -211,7 +219,10 @@ lsp_ssl_map <- function(
 
         # add zero-inflated discrete uniform prior on eta
         if (n_eta > 1L && E_space[e] != 0.0) {
-          lp <- lp - log(n_eta - 1L)
+          lp <- lp +
+            log(1 - eta_zero_mass) -
+            log(n_eta - 1L) -
+            log(eta_zero_mass)
         }
         lp
       },
