@@ -16,7 +16,7 @@ source("LSP_SS/LSP_SSR_fixed_s.R")
 source("LSP_SS/LSP_SSR_random_s.R")
 
 # load Spike-and-Slab LASSO Functions
-source("LSP_SSLR.R")
+source("LSP_SSL/LSP_SSLR.R")
 
 # generate weights -------------------------------------------------------
 
@@ -438,12 +438,14 @@ baseline_data_sim_function <- function(seed, n) {
     )
 
     # run standard spike and slab lasso
-    baseline_fits$`ssl, fixed s` <- lsp_fixed_ssl_map(
+    baseline_fits$`ssl, fixed s` <- lsp_ssl_map(
       X,
       y,
       E_space = 0,
       weights = NULL,
-      s_fixed = sparsity
+      penalty = "separable",
+      variance = "unknown",
+      sparsity = sparsity
     ) |>
       select_lambda0_bic(X = X, y = y)
   }
@@ -464,11 +466,13 @@ baseline_data_sim_function <- function(seed, n) {
     )
 
     # run standard spike and slab lasso
-    baseline_fits$`ssl, random s` <- lsp_random_ssl_map(
+    baseline_fits$`ssl, random s` <- lsp_ssl_map(
       X,
       y,
       E_space = 0,
-      weights = NULL
+      weights = NULL,
+      penalty = "adaptive",
+      variance = "unknown"
     ) |>
       select_lambda0_bic(X = X, y = y)
   }
@@ -516,12 +520,14 @@ sim_function <- function(baseline_fits, weights) {
     )
 
     # run LSP for SSL with fixed sparsity
-    all_fits$`lsp, ssl fixed s` <- lsp_fixed_ssl_map(
+    all_fits$`lsp, ssl fixed s` <- lsp_ssl_map(
       X,
       y,
       E_space = eta_range,
       weights = weights,
-      s_fixed = sparsity
+      penalty = "separable",
+      variance = "unknown",
+      sparsity = sparsity
     ) |>
       select_lambda0_bic(X = X, y = y)
   }
@@ -543,12 +549,14 @@ sim_function <- function(baseline_fits, weights) {
       return_samples = FALSE
     )
 
-    # run LSP for SSL with fixed sparsity
-    all_fits$`lsp, ssl random s` <- lsp_random_ssl_map(
+    # run LSP for SSL with random sparsity
+    all_fits$`lsp, ssl random s` <- lsp_ssl_map(
       X,
       y,
       E_space = eta_range,
-      weights = weights
+      weights = weights,
+      penalty = "adaptive",
+      variance = "unknown"
     ) |>
       select_lambda0_bic(X = X, y = y)
   }
@@ -591,12 +599,14 @@ eta_sensitivity_function <- function(seed, weights, set_eta) {
     )
 
     # run LSP for SSL with fixed sparsity
-    all_fits$`lsp, ssl fixed s` <- lsp_fixed_ssl_map(
+    all_fits$`lsp, ssl fixed s` <- lsp_ssl_map(
       X,
       y,
       E_space = set_eta,
       weights = weights,
-      s_fixed = sparsity
+      penalty = "separable",
+      variance = "unknown",
+      sparsity = sparsity
     ) |>
       select_lambda0_bic(X = X, y = y)
   }
@@ -618,12 +628,14 @@ eta_sensitivity_function <- function(seed, weights, set_eta) {
       return_samples = FALSE
     )
 
-    # run LSP for SSL with fixed sparsity
-    all_fits$`lsp, ssl random s` <- lsp_random_ssl_map(
+    # run LSP for SSL with random sparsity
+    all_fits$`lsp, ssl random s` <- lsp_ssl_map(
       X,
       y,
       E_space = set_eta,
-      weights = weights
+      weights = weights,
+      penalty = "adaptive",
+      variance = "unknown"
     ) |>
       select_lambda0_bic(X = X, y = y)
   }

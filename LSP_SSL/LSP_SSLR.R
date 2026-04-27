@@ -12,7 +12,7 @@ dyn.load(dll_path)
 stopifnot(is.loaded("SSL_gaussian", PACKAGE = "lsp_ssl"))
 
 # LSP for Spike-and-Slab LASSO
-lsp_random_ssl_map <- function(
+lsp_ssl_map <- function(
   X,
   y,
   weights = NULL,
