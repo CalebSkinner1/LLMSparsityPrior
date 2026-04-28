@@ -29,7 +29,7 @@ phi_range <- c(0.7, 0.8, 0.9)
 total_cores <- parallel::detectCores(logical = FALSE)
 cores <- min(total_cores, 50)
 
-plan(multisession, workers = cores)
+plan(multicore, workers = cores)
 options(future.globals.maxSize = 2000 * 1024^2)
 
 # run simulations ----------------------------------------------------------
