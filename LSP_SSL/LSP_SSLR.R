@@ -3,35 +3,14 @@
 # https://cran.r-project.org/web/packages/SSLASSO/index.html
 # with source code accessed from this github https://github.com/cran/SSLASSO/blob/master/R/SSLASSO.R
 
-# ---- compile and load lsp_ssl -----------------------------------------------
-pkg_dir <- file.path(getwd(), "LSP_SSL")
-dll_path <- file.path(pkg_dir, paste0("lsp_ssl", .Platform$dynlib.ext))
-src_files <- file.path(pkg_dir, c("LSP_SSL_functions.c", "LSP_SSL_descent.c"))
-
-needs_compile <- !file.exists(dll_path) ||
-  any(file.mtime(src_files) > file.mtime(dll_path))
-
-if (needs_compile) {
-  message("Compiling lsp_ssl...")
-  # Remove stale artifacts before compiling
-  stale <- file.path(
-    pkg_dir,
-    c("LSP_SSL_functions.o", "LSP_SSL_descent.o", "lsp_ssl.so")
-  )
-  invisible(file.remove(Filter(file.exists, stale)))
-  # Pass full absolute paths to avoid any working directory dependency
-  ret <- system(paste(
-    "R CMD SHLIB -o",
-    shQuote(dll_path),
-    paste(shQuote(src_files), collapse = " ")
-  ))
-  if (ret != 0) stop("Compilation of lsp_ssl failed.")
-}
+# ---- load lsp_ssl -----------------------------------------------
+dll_path <- file.path(getwd(), paste0("LSP_SSL/lsp_ssl", .Platform$dynlib.ext))
 
 if ("lsp_ssl" %in% names(getLoadedDLLs())) {
   dyn.unload(dll_path)
 }
 dyn.load(dll_path)
+
 stopifnot(is.loaded("SSL_gaussian", PACKAGE = "lsp_ssl"))
 
 # LSP For Spike-and-Slab Lasso -------------------------------------------
