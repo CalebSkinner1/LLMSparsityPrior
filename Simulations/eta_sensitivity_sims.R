@@ -18,10 +18,11 @@ a_sigma <- 1
 b_sigma <- 1
 tau <- 1
 sparsity <- 0.01
-eta_range <- NULL
+eta_range <- seq(1, 20, by = 1)
 iter <- 30000
 burn_in <- 5000
 random_s <- TRUE
+fixed_s <- FALSE
 
 # select grid of weight agreements to evaluate
 phi_range <- c(0.7, 0.8, 0.9)
@@ -35,11 +36,13 @@ options(future.globals.maxSize = 2000 * 1024^2)
 # run simulations ----------------------------------------------------------
 for (phi in phi_range) {
   # select weight quality phi
-  message(paste0("   evaluating weights for phi = ", phi))
+  message(paste0("evaluating weights for phi = ", phi))
   weights <- generate_weights(phi, true_gamma, categories = 5)
   l1_agreement <- l1_weight_agreement(true_gamma, weights)
 
   for (eta in eta_range) {
+    message("    evaluating eta = ", eta)
+
     file_name <- paste0("weights", phi, "eta_", eta, ".csv")
 
     eta_sensitivity_results <- future_map(
