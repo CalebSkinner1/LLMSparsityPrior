@@ -198,10 +198,18 @@ lsp_ssl_map <- function(
 
   for (l in seq_len(nlambda)) {
     # Use the baseline sigma as a common reference for all eta comparisons
-    sigma_ref <- eta_results[[which(E_space == 0)]]$sigmas[l]
-    # Fall back to first run if 0 is not in E_space
-    if (length(sigma_ref) == 0 || is.nan(sigma_ref)) {
-      sigma_ref <- eta_results[[1]]$sigmas[l]
+    zero_idx <- which(E_space == 0)
+    sigma_ref <- if (length(zero_idx) == 1L) {
+      eta_results[[zero_idx]]$sigmas[l]
+    } else {
+      eta_results[[1]]$sigmas[l]
+    }
+    if (is.nan(sigma_ref) || is.na(sigma_ref)) {
+      sigma_ref <- Filter(
+        function(x) !is.nan(x) && !is.na(x),
+        lapply(eta_results, function(r) r$sigmas[l])
+      )
+      sigma_ref <- if (length(sigma_ref) > 0) sigma_ref[[1]] else 1.0
     }
 
     log_posts <- vapply(
@@ -335,9 +343,6 @@ compute_log_posterior <- function(
       (1 - theta_v) * (lambda0_final / 2.0) * exp(-lambda0_final * ab),
     1e-300
   )))
-
-  s_safe <- max(min(s_val, 1.0 - 1e-10), 1e-10)
-  log_prior_s <- (a_s - 1.0) * log(s_safe) + (b_s - 1.0) * log(1.0 - s_safe)
 
   log_lik + log_prior_beta + log_prior_s
 }
