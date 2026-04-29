@@ -573,7 +573,6 @@ sim_function <- function(baseline_fits, weights) {
 }
 
 eta_sensitivity_function <- function(seed, weights, set_eta) {
-  # generate X and coefficients
   set.seed(seed)
   # generate X and coefficients
   X <- MASS::mvrnorm(n, mu = rep(0, p), Xvar * cov_mat)
@@ -582,6 +581,8 @@ eta_sensitivity_function <- function(seed, weights, set_eta) {
 
   # generate y
   y <- X %*% beta + alpha + rnorm(n, 0, sd = y_sd)
+
+  all_fits <- list()
 
   if (fixed_s == TRUE) {
     # run LSP for SS with fixed sparsity
