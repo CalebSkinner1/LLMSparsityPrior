@@ -18,7 +18,7 @@ a_sigma <- 1
 b_sigma <- 1
 tau <- 1
 sparsity <- 0.01
-eta_range <- NULL
+eta_range <- seq(from = 0, to = 10, by = 1) # set so equal among all weight settings
 iter <- 30000
 burn_in <- 5000
 random_s <- TRUE
