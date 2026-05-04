@@ -47,7 +47,7 @@ weight_names <- c(
 )
 
 aki_weights_list <- map(
-  str_c("AKI Data Application/analysis/weights/", weight_names),
+  str_c("AKI Data Application/weights/", weight_names),
   read_weights_file
 )
 names(aki_weights_list) <- weight_names

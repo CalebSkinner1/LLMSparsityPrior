@@ -50,11 +50,11 @@ aki_data5 <- aki_data_0 |>
 # ------------------------------------------------------------------------------
 
 aki_weights_0 <- read_csv(
-  "AKI Data Application/analysis/weights/aki_weights_original_1.csv",
+  "AKI Data Application/weights/aki_weights_original_1.csv",
   show_col_types = FALSE
 )
 aki_weights_probabilities <- read_csv(
-  "AKI Data Application/analysis/weights/aki_weights_probability_1.csv",
+  "AKI Data Application/weights/aki_weights_probability_1.csv",
   show_col_types = FALSE
 )
 

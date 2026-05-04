@@ -28,7 +28,7 @@ aki_data <- read_csv("t60_reg_data.csv", show_col_types = FALSE) |>
 # ------------------------------------------------------------------------------
 
 aki_weights <- read_csv(
-  "AKI Data Application/analysis/weights/aki_weights_original_1.csv",
+  "AKI Data Application/weights/aki_weights_original_1.csv",
   show_col_types = FALSE
 ) |>
   select(value, importance) |>
@@ -37,7 +37,7 @@ aki_weights <- read_csv(
   arrange(value)
 
 aki_weights_probabilities <- read_csv(
-  "AKI Data Application/analysis/weights/aki_weights_probabilities_1.csv",
+  "AKI Data Application/weights/aki_weights_probabilities_1.csv",
   show_col_types = FALSE
 ) |>
   select(value, importance) |>
