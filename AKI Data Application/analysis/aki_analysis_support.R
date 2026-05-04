@@ -1,6 +1,19 @@
-# aki_analysis_support
+# AKI Analysis — Model Fitting and Evaluation Support
+#
+# Utility functions for the AKI real-data analysis. Covers data preparation,
+# cross-validation partitioning, and six train-and-evaluate routines spanning
+# different model families and weight integration strategies:
+#   train_and_evaluate_baselines          — weight-free baseline models
+#   train_and_evaluate_fixed_eta          — LSP at a user-specified eta
+#   train_and_evaluate_random_eta         — LSP with discrete uniform prior on eta
+#   train_and_evaluate_probability_weights — LLM weights used as direct inclusion probs
+#   train_and_evaluate_non_ss             — SSL and LLM-Lasso comparisons
+#   train_and_evaluate_spike_and_slab     — SS comparisons across weight strategies
 
-# load libraries
+# ------------------------------------------------------------------------------
+# Dependencies
+# ------------------------------------------------------------------------------
+
 suppressPackageStartupMessages({
   library("tidyverse")
   library("tidymodels")
@@ -8,24 +21,28 @@ suppressPackageStartupMessages({
   library("future")
 })
 
-# negate function
 `%!in%` <- Negate(`%in%`)
 
-# load Spike-and-Slab Functions
 source("LSP_SS/LSP_SSR_fixed_s.R")
 source("LSP_SS/LSP_SSR_random_s.R")
-
-# load Spike-and-Slab LASSO Functions
 source("LSP_SSL/LSP_SSLR.R")
 
-# LLM-Lasso ---------------------------------------------------------------
-# code may be found at https://github.com/pilancilab/LLM-Lasso, lightly edited for functionality
 
+# ------------------------------------------------------------------------------
+# LLM-Lasso
+#
+# Adapted from Zhang et al.: https://github.com/pilancilab/LLM-Lasso
+# Lightly edited for compatibility with this analysis framework.
+# ------------------------------------------------------------------------------
+
+# Scale X_new using the center and standard deviation computed from X_train.
+# Columns with zero or non-finite variance are left unscaled.
 .scale_like_train <- function(X_train, X_new = NULL) {
   X_train <- as.matrix(X_train)
   center <- colMeans(X_train)
   scalev <- apply(X_train, 2, sd)
   scalev[!is.finite(scalev) | scalev == 0] <- 1
+
   X_train_sc <- scale(X_train, center = center, scale = scalev)
   X_new_sc <- if (!is.null(X_new)) {
     scale(as.matrix(X_new), center = center, scale = scalev)
@@ -35,14 +52,15 @@ source("LSP_SSL/LSP_SSLR.R")
   list(X_train = X_train_sc, X_new = X_new_sc, center = center, scale = scalev)
 }
 
-# Align (optionally named) weights to X's column order; validate positivity
+# Align a (optionally named) weight vector to X's column order and validate
+# that all entries are strictly positive and finite.
 .align_and_check_weights <- function(weights, X) {
   if (!is.null(names(weights))) {
-    if (!all(colnames(X) %in% names(weights))) {
-      missing <- setdiff(colnames(X), names(weights))
+    missing_cols <- setdiff(colnames(X), names(weights))
+    if (length(missing_cols) > 0) {
       stop(
-        "weights are named, but missing entries for features: ",
-        paste(missing, collapse = ", ")
+        "weights are named but missing entries for features: ",
+        paste(missing_cols, collapse = ", ")
       )
     }
     w <- as.numeric(weights[colnames(X)])
@@ -56,15 +74,16 @@ source("LSP_SSL/LSP_SSLR.R")
   pmax(w, 1e-8)
 }
 
-# Area between CV curves across matched sparsity (larger = better)
+# Area between the candidate CV error curve and the baseline (uniform penalty)
+# CV error curve, interpolated to a common sparsity grid. Larger = better.
 cve <- function(cvm, non_zero, ref_cvm, ref_non_zero) {
   df1 <- tibble(ref_non_zero, ref_cvm) %>%
     group_by(ref_non_zero) %>%
-    summarise(ref_cvm = min(ref_cvm), .groups = 'drop') %>%
+    summarise(ref_cvm = min(ref_cvm), .groups = "drop") %>%
     arrange(ref_non_zero)
   df2 <- tibble(non_zero, cvm) %>%
     group_by(non_zero) %>%
-    summarise(cvm = min(cvm), .groups = 'drop') %>%
+    summarise(cvm = min(cvm), .groups = "drop") %>%
     arrange(non_zero)
 
   interp <- stats::approx(
@@ -74,7 +93,6 @@ cve <- function(cvm, non_zero, ref_cvm, ref_non_zero) {
     method = "linear",
     rule = 2
   )
-
   n <- length(df2$non_zero)
   if (n < 2) {
     return(0)
@@ -91,6 +109,9 @@ cve <- function(cvm, non_zero, ref_cvm, ref_non_zero) {
   area
 }
 
+# Fit LLM-Lasso by selecting the penalty factor exponent (1/w^k,
+# k = 0,...,max_imp_pow) that maximizes the area between its CV error curve
+# and the unweighted baseline, then re-fitting at the chosen penalty.
 llm_lasso_simp <- function(
   X_train,
   y_train,
@@ -104,14 +125,14 @@ llm_lasso_simp <- function(
   type_measure = NULL,
   use_lambda_1se = FALSE
 ) {
-  glm_family <-
-    if (multinomial) {
-      "multinomial"
-    } else if (regression) {
-      "gaussian"
-    } else {
-      "binomial"
-    }
+  glm_family <- if (multinomial) {
+    "multinomial"
+  } else if (regression) {
+    "gaussian"
+  } else {
+    "binomial"
+  }
+
   if (is.null(type_measure)) {
     type_measure <- if (glm_family == "gaussian") "mse" else "class"
   }
@@ -122,19 +143,17 @@ llm_lasso_simp <- function(
   ) {
     stop('For classification, type_measure must be "class" or "deviance".')
   }
-
-  # Align labels for classification
   if (glm_family %in% c("binomial", "multinomial")) {
     y_train <- if (is.factor(y_train)) y_train else factor(y_train)
   }
 
   X_train_sc <- .scale_like_train(X_train)$X_train
   w <- .align_and_check_weights(weights, X_train_sc)
-
   pf_list <- lapply(0:max_imp_pow, function(i) 1 / (w^i))
   pf_names <- paste0("1/imp^", 0:max_imp_pow)
 
-  ref_cvm <- ref_nz <- NULL
+  ref_cvm <- NULL
+  ref_nz <- NULL
   best_area <- -Inf
   best_name <- NULL
   best_pf <- NULL
@@ -157,6 +176,7 @@ llm_lasso_simp <- function(
     if (is.null(ref_nz)) {
       ref_nz <- cv$nzero
     }
+
     a <- cve(cv$cvm, cv$nzero, ref_cvm, ref_nz)
     if (a > best_area) {
       best_area <- a
@@ -184,22 +204,26 @@ llm_lasso_simp <- function(
     n_features <- sum(co[-1] != 0)
     coef_obj <- co
   } else {
-    co_list <- coef(cv_best, s = s_choice) # list (one coef matrix per class)
-    nz_by_class <- lapply(co_list, function(cm) as.numeric(cm[-1, 1] != 0))
-    feat_nonzero <- Reduce("|", nz_by_class)
+    co_list <- coef(cv_best, s = s_choice)
+    feat_nonzero <- Reduce(
+      "|",
+      lapply(co_list, function(cm) as.numeric(cm[-1, 1] != 0))
+    )
     n_features <- sum(feat_nonzero)
     coef_obj <- co_list
   }
 
   list(
-    model = best_name,
     algo = "LLM-Lasso",
+    model = best_name,
     method = lam,
-    coef = coef_obj, # numeric vector (gaussian/binomial) or list per class (multinomial)
+    coef = coef_obj,
     n_features = n_features
   )
 }
 
+# Fit LLM-Lasso at a single fixed eta value (penalty factor = 1/w^eta) rather
+# than searching over a grid of exponents. Useful for sensitivity analysis.
 llm_lasso_fixed_eta <- function(
   X_train,
   y_train,
@@ -213,14 +237,14 @@ llm_lasso_fixed_eta <- function(
   type_measure = NULL,
   use_lambda_1se = FALSE
 ) {
-  glm_family <-
-    if (multinomial) {
-      "multinomial"
-    } else if (regression) {
-      "gaussian"
-    } else {
-      "binomial"
-    }
+  glm_family <- if (multinomial) {
+    "multinomial"
+  } else if (regression) {
+    "gaussian"
+  } else {
+    "binomial"
+  }
+
   if (is.null(type_measure)) {
     type_measure <- if (glm_family == "gaussian") "mse" else "class"
   }
@@ -231,8 +255,6 @@ llm_lasso_fixed_eta <- function(
   ) {
     stop('For classification, type_measure must be "class" or "deviance".')
   }
-
-  # Align labels for classification
   if (glm_family %in% c("binomial", "multinomial")) {
     y_train <- if (is.factor(y_train)) y_train else factor(y_train)
   }
@@ -259,9 +281,11 @@ llm_lasso_fixed_eta <- function(
     n_features <- sum(co[-1] != 0)
     coef_obj <- co
   } else {
-    co_list <- coef(cv_best, s = s_choice) # list (one coef matrix per class)
-    nz_by_class <- lapply(co_list, function(cm) as.numeric(cm[-1, 1] != 0))
-    feat_nonzero <- Reduce("|", nz_by_class)
+    co_list <- coef(cv_best, s = s_choice)
+    feat_nonzero <- Reduce(
+      "|",
+      lapply(co_list, function(cm) as.numeric(cm[-1, 1] != 0))
+    )
     n_features <- sum(feat_nonzero)
     coef_obj <- co_list
   }
@@ -269,79 +293,77 @@ llm_lasso_fixed_eta <- function(
   list(
     algo = "LLM-Lasso",
     method = lam,
-    coef = coef_obj, # numeric vector (gaussian/binomial) or list per class (multinomial)
+    coef = coef_obj,
     n_features = n_features
   )
 }
 
-# Data Prep ---------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Data Preparation Utilities
+# ------------------------------------------------------------------------------
 
-# scaling/imputation function
+# Scale a matrix using precomputed training center and scale vectors.
+# Missing values (produced by scaling) are imputed with the column mean (0
+# on the scaled space).
 scale_data <- function(mat, train_center, train_scale) {
-  scale(mat, center = train_center, scale = train_scale) %>% # scale data
-    apply(., 2, function(x) {
-      # replace NAs with mean
+  scale(mat, center = train_center, scale = train_scale) %>%
+    apply(2, function(x) {
       x[is.na(x)] <- 0
-      return(x)
+      x
     })
 }
 
-# compute l1 weight agreement
+# L1 agreement: 1 - mean absolute deviation after min-max scaling
 l1_weight_agreement <- function(true_gamma, weights) {
-  # scale weights
   scaled_weights <- (weights - min(weights)) / (max(weights) - min(weights))
-
-  # l1 distance
-  l1 <- mean(abs(true_gamma - scaled_weights))
-
-  # rescale entropy on 0 to 1 scale: "agreement"
-  1 - l1
+  1 - mean(abs(true_gamma - scaled_weights))
 }
 
-# compute pairwise weight agreement
+# Pairwise agreement: fraction of covariate pairs ranked
+# consistently between true_gamma and weights
 pairwise_weight_agreement <- function(true_gamma, weights) {
-  # ensure true_gamma and weights have the same length
   if (length(true_gamma) != length(weights)) {
     stop("true_gamma and weights must have the same number of elements")
   }
+  true_gamma_mat <- ifelse(outer(true_gamma, true_gamma, FUN = "-") > 0, 1, 0)
+  weights_mat <- ifelse(outer(weights, weights, FUN = "-") > 0, 1, 0)
 
-  true_gamma_diff_mat <- outer(true_gamma, true_gamma, FUN = "-")
-  true_gamma_mat <- ifelse(true_gamma_diff_mat > 0, 1, 0)
-
-  weights_diff_mat <- outer(weights, weights, FUN = "-")
-  weights_mat <- ifelse(weights_diff_mat > 0, 1, 0)
-
-  # compute difference of true_gamma pairwise matrix and weights_diff pairwise matrix
-  diff_mat <- abs(true_gamma_mat - weights_mat) # 1 if agreement differs, 0 if same
-  total_disagreement <- sum(colSums(diff_mat))
-  # compute the total number of pairwise interactions, ignoring the off diagonal and dismissing half the matrix
-  total_cells <- length(true_gamma) * (length(true_gamma) - 1) / 2
-  percent_agreement <- (total_cells - total_disagreement) / total_cells
-  percent_agreement
+  total_disagreement <- sum(abs(true_gamma_mat - weights_mat))
+  total_pairs <- length(true_gamma) * (length(true_gamma) - 1) / 2
+  (total_pairs - total_disagreement) / total_pairs
 }
 
-# Select top 200 correlative features to remove degenerate columns -------
-# function: subset data
+# Remove near-constant features: retains only columns where the modal value
+# occupies fewer than `threshold` * 100% of observations.
 topK_features <- function(data, threshold = 0.9) {
-  # observations
-  n <- data |> nrow()
-
-  # number of times the mode occurs in each feature
-  mode_count <- data |>
-    summarize(
-      across(everything(), ~ max(table(.x)))
-    )
-
-  # remove features that do not display unique values at least threshold percent of the time
-  selected_features <- mode_count |>
-    select(where(~ .x < threshold * n)) |>
-    colnames()
-
-  # return data
-  data |> select(any_of(selected_features))
+  n <- nrow(data)
+  mode_count <- data |> summarize(across(everything(), ~ max(table(.x))))
+  data |>
+    select(any_of(
+      mode_count |> select(where(~ .x < threshold * n)) |> colnames()
+    ))
 }
 
-# estimate phi
+# ------------------------------------------------------------------------------
+# estimate_phi
+#
+# Estimates the empirical weight agreement between LLM-derived weights and a
+# spike-and-slab posterior inclusion vector fitted on the supplied data. Useful
+# as an offline diagnostic for calibrating weight quality before running the
+# main analysis.
+#
+# Arguments:
+#   data         - Data frame with outcome and predictors
+#   outcome_var  - Name of the outcome column
+#   weights      - Data frame with an `importance` column (length p)
+#   set_tau      - Slab variance for the spike-and-slab sampler
+#   set_sparsity - Prior inclusion probability for the sampler
+#   burn_in      - Burn-in iterations
+#   iter         - Total sampler iterations
+#
+# Returns:
+#   Named numeric vector with L1 and pairwise weight agreement values
+# ------------------------------------------------------------------------------
 estimate_phi <- function(
   data,
   outcome_var,
@@ -351,33 +373,19 @@ estimate_phi <- function(
   burn_in = 25000,
   iter = 125000
 ) {
-  # create training data
   y_train <- data |> pull(any_of(outcome_var))
   X_train <- data %>% select(-any_of(outcome_var)) %>% as.matrix()
 
-  X_train_center <- X_train %>% colMeans(na.rm = TRUE)
-  X_train_scale <- X_train %>% apply(., 2, sd, na.rm = TRUE)
-  X_train_scaled <- scale_data(X_train, X_train_center, X_train_scale)
-
-  y_train_center <- y_train |> mean(na.rm = TRUE)
-  y_train_scale <- y_train |> sd(na.rm = TRUE)
-  y_train_scaled <- scale_data(y_train, y_train_center, y_train_scale)
-
-  # lasso_results <- glmnet::glmnet(
-  #   x = X_train_scaled,
-  #   y = y_train_scaled,
-  #   alpha = 1,
-  #   lambda = (glmnet::cv.glmnet(
-  #     X_train_scaled,
-  #     y_train_scaled,
-  #     alpha = 1
-  #   )$lambda.min)
-  # )
-
-  # lasso_gamma <- rep(0, nrow(weights))
-  # lasso_gamma[lasso_results$beta[, 1] != 0] <- 1
-
-  # lasso_weight_agreement_l1 <- l1_weight_agreement(lasso_gamma, weights$importance)
+  X_train_scaled <- scale_data(
+    X_train,
+    colMeans(X_train, na.rm = TRUE),
+    apply(X_train, 2, sd, na.rm = TRUE)
+  )
+  y_train_scaled <- scale_data(
+    y_train,
+    mean(y_train, na.rm = TRUE),
+    sd(y_train, na.rm = TRUE)
+  )
 
   ss_results <- lsp_fixed_ss_gibbs_sampler(
     X_train_scaled,
@@ -386,28 +394,43 @@ estimate_phi <- function(
     a_sigma = 1,
     b_sigma = 1,
     tau = set_tau,
-    init_weight = FALSE,
+    init_weights = FALSE,
     burn_in = burn_in,
     iter = iter,
-    c = 0
+    E_space = 0
   )
 
-  ss_gamma <- rep(0, nrow(weights))
-  ss_gamma[ss_results$gamma > 0.5] <- 1
-
-  ss_weight_agreement_l1 <- l1_weight_agreement(ss_gamma, weights$importance)
-  ss_weight_agreement_pairwise <- pairwise_weight_agreement(
-    ss_gamma,
-    weights$importance
-  )
+  ss_gamma <- as.integer(ss_results$gamma > 0.5)
 
   c(
-    "ss_l1_weight_agreement" = ss_weight_agreement_l1,
-    "ss_pairwise_weight_agreement" = ss_weight_agreement_pairwise
+    ss_l1_weight_agreement = l1_weight_agreement(ss_gamma, weights$importance),
+    ss_pairwise_weight_agreement = pairwise_weight_agreement(
+      ss_gamma,
+      weights$importance
+    )
   )
 }
 
-# train-test split
+# ------------------------------------------------------------------------------
+# train_test_split
+#
+# Partitions data into stratified cross-validation folds and returns a list of
+# scaled train/test matrices. When n_folds = 1, all observations are assigned
+# to training (assessment set is empty). When n is specified, the training set
+# is randomly subsampled to that size before scaling.
+#
+# Arguments:
+#   data        - Data frame with outcome and predictors
+#   weights     - Weight data frame to attach to each partition
+#   outcome_var - Name of the outcome column
+#   n_folds     - Number of CV folds (1 = no held-out test set)
+#   repetitions - Number of CV repetitions
+#   n           - Optional training set size cap (subsampled if exceeded)
+#
+# Returns:
+#   A list of partition objects, each containing scaled X/y train and test
+#   matrices, scale factors for back-transformation, and the weight data frame
+# ------------------------------------------------------------------------------
 train_test_split <- function(
   data,
   weights,
@@ -418,13 +441,9 @@ train_test_split <- function(
 ) {
   if (n_folds == 1) {
     split_obj <- make_splits(
-      list(
-        analysis = seq_len(nrow(data)),
-        assessment = integer(0)
-      ),
+      list(analysis = seq_len(nrow(data)), assessment = integer(0)),
       data = data
     )
-
     folds <- list(splits = list(split_obj))
   } else {
     folds <- vfold_cv(
@@ -435,77 +454,81 @@ train_test_split <- function(
     )
   }
 
-  centered_partitions <- map(
-    folds$splits,
-    function(x) {
-      train_data <- as.data.frame(x)
-      test_data <- data[-x[[2]], ]
+  map(folds$splits, function(x) {
+    train_data <- as.data.frame(x)
+    test_data <- data[-x[[2]], ]
 
-      # subsample training set if n is specified
-      if (!is.null(n) && n < nrow(train_data)) {
-        train_data <- train_data[sample(nrow(train_data), n), ]
-      }
-
-      # create training data
-      y_train <- train_data |> pull(any_of(outcome_var))
-      X_train <- train_data %>% select(-any_of(outcome_var)) %>% as.matrix()
-
-      X_train_center <- X_train %>% colMeans(na.rm = TRUE)
-      X_train_scale <- X_train %>% apply(., 2, sd, na.rm = TRUE)
-      X_train_scaled <- scale_data(X_train, X_train_center, X_train_scale)
-
-      y_train_center <- y_train |> mean(na.rm = TRUE)
-      y_train_scale <- y_train |> sd(na.rm = TRUE)
-      y_train_scaled <- scale_data(y_train, y_train_center, y_train_scale)
-
-      # create testing data
-      X_test_scaled <- test_data |>
-        select(-any_of(outcome_var)) |>
-        as.matrix() |>
-        scale_data(X_train_center, X_train_scale)
-      y_test_scaled <- test_data |>
-        pull(any_of(outcome_var)) |>
-        scale_data(y_train_center, y_train_scale)
-
-      list(
-        "X_train_scaled" = X_train_scaled,
-        "y_train_scaled" = y_train_scaled,
-        "X_test_scaled" = X_test_scaled,
-        "y_test_scaled" = y_test_scaled,
-        "y_scale_factor" = y_train_scale,
-        "y_loc_factor" = y_train_center,
-        "weights" = weights
-      )
+    if (!is.null(n) && n < nrow(train_data)) {
+      train_data <- train_data[sample(nrow(train_data), n), ]
     }
-  )
-  return(centered_partitions)
+
+    y_train <- train_data |> pull(any_of(outcome_var))
+    X_train <- train_data %>% select(-any_of(outcome_var)) %>% as.matrix()
+
+    X_train_center <- colMeans(X_train, na.rm = TRUE)
+    X_train_scale <- apply(X_train, 2, sd, na.rm = TRUE)
+    X_train_scaled <- scale_data(X_train, X_train_center, X_train_scale)
+
+    y_train_center <- mean(y_train, na.rm = TRUE)
+    y_train_scale <- sd(y_train, na.rm = TRUE)
+    y_train_scaled <- scale_data(y_train, y_train_center, y_train_scale)
+
+    X_test_scaled <- test_data |>
+      select(-any_of(outcome_var)) |>
+      as.matrix() |>
+      scale_data(X_train_center, X_train_scale)
+    y_test_scaled <- test_data |>
+      pull(any_of(outcome_var)) |>
+      scale_data(y_train_center, y_train_scale)
+
+    list(
+      X_train_scaled = X_train_scaled,
+      y_train_scaled = y_train_scaled,
+      X_test_scaled = X_test_scaled,
+      y_test_scaled = y_test_scaled,
+      y_scale_factor = y_train_scale,
+      y_loc_factor = y_train_center,
+      weights = weights
+    )
+  })
 }
 
-# Train and Evaluate Models ----------------------------------------------
-squared_error <- function(y_true, pred) {
-  # squared error
-  (y_true - pred)^2
-}
+# ------------------------------------------------------------------------------
+# Train-and-Evaluate Utilities
+# ------------------------------------------------------------------------------
 
+# Per-observation squared error
+squared_error <- function(y_true, pred) (y_true - pred)^2
+
+# BIC-based lambda selection for SSL: returns the coefficient vector
+# (intercept prepended) at the lambda0 minimizing BIC
 select_lambda0_bic <- function(ssl_object, X, y) {
   n <- length(y)
-
-  rss <- apply(
-    ssl_object$beta,
-    2,
-    function(b) sum((y - X %*% b)^2)
-  )
-  df <- apply(
-    ssl_object$beta,
-    2,
-    function(b) sum(b != 0)
-  )
+  rss <- apply(ssl_object$beta, 2, function(b) sum((y - X %*% b)^2))
+  df <- apply(ssl_object$beta, 2, function(b) sum(b != 0))
   bic <- n * log(rss / n) + df * log(n)
   best_idx <- which.min(bic)
-
   c(ssl_object$intercept[, best_idx], ssl_object$beta[, best_idx])
 }
 
+# ------------------------------------------------------------------------------
+# train_and_evaluate_baselines
+#
+# Fits weight-free baseline models (Lasso, horseshoe, and optionally standard
+# SS / SSL without LLM weights) on a single partition and returns per-
+# observation squared errors rescaled to the original response units.
+#
+# Arguments:
+#   seed         - Random seed for reproducibility
+#   partition    - Output element from train_test_split
+#   fixed_s      - If TRUE, fit SS/SSL with fixed sparsity
+#   random_s     - If TRUE, fit SS/SSL with Beta prior on sparsity
+#                  (exactly one of fixed_s / random_s should be TRUE)
+#   set_tau      - Slab variance
+#   set_sparsity - Prior inclusion probability (used when fixed_s = TRUE)
+#   set_burn_in  - Burn-in iterations for MCMC samplers
+#   set_iter     - Total iterations for MCMC samplers
+# ------------------------------------------------------------------------------
 train_and_evaluate_baselines <- function(
   seed,
   partition,
@@ -520,13 +543,12 @@ train_and_evaluate_baselines <- function(
   y_train_scaled <- partition$y_train_scaled
   X_test_scaled <- partition$X_test_scaled
   y_test_scaled <- partition$y_test_scaled
-  weights <- partition$weights
   y_scale_factor <- partition$y_scale_factor
   y_loc_factor <- partition$y_loc_factor
 
   set.seed(seed)
+
   if (fixed_s) {
-    # spike and slab
     ss_samples <- lsp_fixed_ss_gibbs_sampler(
       X_train_scaled,
       y_train_scaled,
@@ -540,7 +562,6 @@ train_and_evaluate_baselines <- function(
       init_weights = FALSE,
       return_samples = FALSE
     )
-
     ssl_fit <- lsp_ssl_map(
       X_train_scaled,
       y_train_scaled,
@@ -551,8 +572,7 @@ train_and_evaluate_baselines <- function(
       sparsity = set_sparsity
     ) |>
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
-  }
-  if (random_s) {
+  } else if (random_s) {
     ss_samples <- lsp_random_ss_gibbs_sampler(
       X_train_scaled,
       y_train_scaled,
@@ -568,7 +588,6 @@ train_and_evaluate_baselines <- function(
       init_weights = FALSE,
       return_samples = FALSE
     )
-
     ssl_fit <- lsp_ssl_map(
       X_train_scaled,
       y_train_scaled,
@@ -580,19 +599,17 @@ train_and_evaluate_baselines <- function(
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
   }
 
-  # lasso
   lasso_results <- glmnet::glmnet(
     x = X_train_scaled,
     y = y_train_scaled,
     alpha = 1,
-    lambda = (glmnet::cv.glmnet(
+    lambda = glmnet::cv.glmnet(
       X_train_scaled,
       y_train_scaled,
       alpha = 1
-    )$lambda.min)
+    )$lambda.min
   )
 
-  # horseshoe prior
   hs_fit <- Mhorseshoe::approx_horseshoe(
     y = y_train_scaled,
     X = cbind(1, X_train_scaled),
@@ -604,40 +621,54 @@ train_and_evaluate_baselines <- function(
   gc()
 
   if (length(y_test_scaled) > 0) {
-    ss_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% ss_samples$beta
-    )
-    lasso_se <- squared_error(
-      y_test_scaled,
-      predict(lasso_results, newx = X_test_scaled)
-    )
-    hs_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% as.matrix(hs_coef)
-    )
-    ssl_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% ssl_fit
-    )
-
-    # store mse
     mse <- tibble(
       y = (y_test_scaled * y_scale_factor + y_loc_factor)[, 1],
-      ss_squared_error = ss_se[, 1] * (y_scale_factor^2),
-      lasso_squared_error = lasso_se[, 1] * (y_scale_factor^2),
-      hs_squared_error = hs_se[, 1] * (y_scale_factor^2),
-      ssl_squared_error = ssl_se[, 1] * (y_scale_factor^2)
+      ss_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% ss_samples$beta
+      )[, 1] *
+        y_scale_factor^2,
+      lasso_squared_error = squared_error(
+        y_test_scaled,
+        predict(lasso_results, newx = X_test_scaled)
+      )[, 1] *
+        y_scale_factor^2,
+      hs_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% as.matrix(hs_coef)
+      )[, 1] *
+        y_scale_factor^2,
+      ssl_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% ssl_fit
+      )[, 1] *
+        y_scale_factor^2
     )
   } else {
     mse <- tibble()
   }
 
-  list(
-    "mse" = mse
-  )
+  list(mse = mse)
 }
 
+# ------------------------------------------------------------------------------
+# train_and_evaluate_fixed_eta
+#
+# Fits LSP models (SS and SSL) and LLM-Lasso at a single fixed eta value.
+# Used for eta sensitivity analysis.
+#
+# Arguments:
+#   seed         - Random seed
+#   partition    - Output element from train_test_split
+#   fixed_s      - If TRUE, use fixed-sparsity variants
+#   random_s     - If TRUE, use random-sparsity variants
+#                  (exactly one of fixed_s / random_s should be TRUE)
+#   set_tau      - Slab variance
+#   set_eta      - Fixed eta value passed to E_space
+#   set_sparsity - Prior inclusion probability (used when fixed_s = TRUE)
+#   set_burn_in  - Burn-in iterations
+#   set_iter     - Total iterations
+# ------------------------------------------------------------------------------
 train_and_evaluate_fixed_eta <- function(
   seed,
   partition,
@@ -646,7 +677,6 @@ train_and_evaluate_fixed_eta <- function(
   set_tau = 2,
   set_eta = 1,
   set_sparsity = 0.05,
-  set_confidence = 1,
   set_burn_in = 25000,
   set_iter = 125000
 ) {
@@ -659,7 +689,7 @@ train_and_evaluate_fixed_eta <- function(
   y_loc_factor <- partition$y_loc_factor
 
   set.seed(seed)
-  # llm-lasso
+
   llm_lasso_results <- llm_lasso_fixed_eta(
     X_train = X_train_scaled,
     y_train = y_train_scaled,
@@ -670,14 +700,12 @@ train_and_evaluate_fixed_eta <- function(
   )$coef
 
   if (fixed_s) {
-    # spike and slab constant weights
     lsp_ss_samples <- lsp_fixed_ss_gibbs_sampler(
       X_train_scaled,
       y_train_scaled,
       weights = weights$importance,
-      c = set_confidence,
-      eta = set_eta,
-      s = set_sparsity,
+      E_space = set_eta,
+      sparsity = set_sparsity,
       a_sigma = 1,
       b_sigma = 1,
       tau = set_tau,
@@ -685,7 +713,6 @@ train_and_evaluate_fixed_eta <- function(
       iter = set_iter,
       return_samples = FALSE
     )
-
     lsp_ssl_fit <- lsp_ssl_map(
       X_train_scaled,
       y_train_scaled,
@@ -696,15 +723,12 @@ train_and_evaluate_fixed_eta <- function(
       sparsity = set_sparsity
     ) |>
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
-  }
-  if (random_s) {
-    # spike and slab constant weights
+  } else if (random_s) {
     lsp_ss_samples <- lsp_random_ss_gibbs_sampler(
       X_train_scaled,
       y_train_scaled,
       weights = weights$importance,
-      c = set_confidence,
-      eta = set_eta,
+      E_space = set_eta,
       a_sigma = 1,
       b_sigma = 1,
       a_s = 1,
@@ -715,7 +739,6 @@ train_and_evaluate_fixed_eta <- function(
       iter = set_iter,
       return_samples = FALSE
     )
-
     lsp_ssl_fit <- lsp_ssl_map(
       X_train_scaled,
       y_train_scaled,
@@ -728,38 +751,49 @@ train_and_evaluate_fixed_eta <- function(
   }
 
   if (length(y_test_scaled) > 0) {
-    lsp_ss_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% lsp_ss_samples$beta
-    )
-
-    lsp_ssl_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% lsp_ssl_fit
-    )
-
-    llm_lasso_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% llm_lasso_results
-    )
-
-    # store mse
     mse <- tibble(
       y = (y_test_scaled * y_scale_factor + y_loc_factor)[, 1],
-      # rescaling the mse by the original units
-      lsp_ss_squared_error = lsp_ss_se[, 1] * (y_scale_factor^2),
-      lsp_ssl_squared_error = lsp_ssl_se[, 1] * (y_scale_factor^2),
-      llm_lasso_squared_error = llm_lasso_se[, 1] * (y_scale_factor^2),
+      lsp_ss_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% lsp_ss_samples$beta
+      )[, 1] *
+        y_scale_factor^2,
+      lsp_ssl_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% lsp_ssl_fit
+      )[, 1] *
+        y_scale_factor^2,
+      llm_lasso_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% llm_lasso_results
+      )[, 1] *
+        y_scale_factor^2
     )
   } else {
     mse <- tibble()
   }
 
-  list(
-    "mse" = mse
-  )
+  list(mse = mse)
 }
 
+# ------------------------------------------------------------------------------
+# train_and_evaluate_random_eta
+#
+# Fits LSP models (SS and SSL) and LLM-Lasso with eta selected from a grid.
+# This is the primary LSP evaluation function for the main analysis.
+#
+# Arguments:
+#   seed            - Random seed
+#   partition       - Output element from train_test_split
+#   fixed_s         - If TRUE, use fixed-sparsity variants
+#   random_s        - If TRUE, use random-sparsity variants
+#                     (exactly one of fixed_s / random_s should be TRUE)
+#   set_tau         - Slab variance
+#   set_eta_range   - Grid of eta values passed to E_space
+#   set_sparsity    - Prior inclusion probability (used when fixed_s = TRUE)
+#   set_burn_in     - Burn-in iterations
+#   set_iter        - Total iterations
+# ------------------------------------------------------------------------------
 train_and_evaluate_random_eta <- function(
   seed,
   partition,
@@ -768,7 +802,6 @@ train_and_evaluate_random_eta <- function(
   set_tau = 1,
   set_eta_range = 1,
   set_sparsity = 0.05,
-  set_confidence_range = 1,
   set_burn_in = 25000,
   set_iter = 125000
 ) {
@@ -782,7 +815,6 @@ train_and_evaluate_random_eta <- function(
 
   set.seed(seed)
 
-  # llm-lasso
   llm_lasso_results <- llm_lasso_simp(
     X_train = X_train_scaled,
     y_train = y_train_scaled,
@@ -792,13 +824,12 @@ train_and_evaluate_random_eta <- function(
   )$coef
 
   if (fixed_s) {
-    # lsp fixed s
     lsp_ss_samples <- lsp_fixed_ss_gibbs_sampler(
       X_train_scaled,
       y_train_scaled,
       weights = weights$importance,
       E_space = set_eta_range,
-      s = set_sparsity,
+      sparsity = set_sparsity,
       a_sigma = 1,
       b_sigma = 1,
       tau = set_tau,
@@ -806,7 +837,6 @@ train_and_evaluate_random_eta <- function(
       iter = set_iter,
       return_samples = FALSE
     )
-
     lsp_ssl_fit <- lsp_ssl_map(
       X_train_scaled,
       y_train_scaled,
@@ -817,9 +847,7 @@ train_and_evaluate_random_eta <- function(
       sparsity = set_sparsity
     ) |>
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
-  }
-  if (random_s) {
-    # lsp random s
+  } else if (random_s) {
     lsp_ss_samples <- lsp_random_ss_gibbs_sampler(
       X_train_scaled,
       y_train_scaled,
@@ -835,7 +863,6 @@ train_and_evaluate_random_eta <- function(
       iter = set_iter,
       return_samples = FALSE
     )
-
     lsp_ssl_fit <- lsp_ssl_map(
       X_train_scaled,
       y_train_scaled,
@@ -846,38 +873,40 @@ train_and_evaluate_random_eta <- function(
     ) |>
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
   }
-  if (length(y_test_scaled) > 0) {
-    lsp_ss_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% lsp_ss_samples$beta
-    )
-    lsp_ssl_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% lsp_ssl_fit
-    )
-    llm_lasso_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% llm_lasso_results
-    )
 
-    # store mse
+  if (length(y_test_scaled) > 0) {
     mse <- tibble(
       y = (y_test_scaled * y_scale_factor + y_loc_factor)[, 1],
-      # rescaling the mse by the original units
-      lsp_ss_squared_error = lsp_ss_se[, 1] * (y_scale_factor^2),
-      lsp_ssl_squared_error = lsp_ssl_se[, 1] * (y_scale_factor^2),
-      llm_lasso_squared_error = llm_lasso_se[, 1] * (y_scale_factor^2),
+      lsp_ss_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% lsp_ss_samples$beta
+      )[, 1] *
+        y_scale_factor^2,
+      lsp_ssl_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% lsp_ssl_fit
+      )[, 1] *
+        y_scale_factor^2,
+      llm_lasso_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% llm_lasso_results
+      )[, 1] *
+        y_scale_factor^2
     )
   } else {
     mse <- tibble()
   }
 
-  list(
-    "mse" = mse
-  )
+  list(mse = mse)
 }
 
-train_and_evaluate_continuous_weights <- function(
+# ------------------------------------------------------------------------------
+# train_and_evaluate_probability_weights
+#
+# Fits SS and SSL models in which the LLM importance weights are used directly
+# as per-covariate prior inclusion probabilities.
+# ------------------------------------------------------------------------------
+train_and_evaluate_probability_weights <- function(
   seed,
   partition,
   set_tau = 1,
@@ -894,22 +923,22 @@ train_and_evaluate_continuous_weights <- function(
 
   set.seed(seed)
 
-  # ss random s
-  ss_continuous_samples <- lsp_fixed_ss_gibbs_sampler(
+  # Weights supplied as sparsity: each theta_j = importance_j (no eta scaling)
+  ss_prob_samples <- lsp_fixed_ss_gibbs_sampler(
     X_train_scaled,
     y_train_scaled,
     weights = NULL,
     E_space = 0,
+    sparsity = weights$importance,
     a_sigma = 1,
     b_sigma = 1,
-    sparsity = weights$importance, # weights directly set prior inclusion probability
     tau = set_tau,
     burn_in = set_burn_in,
     iter = set_iter,
     return_samples = FALSE
   )
 
-  ssl_continuous_fit <- lsp_ssl_map(
+  ssl_prob_fit <- lsp_ssl_map(
     X_train_scaled,
     y_train_scaled,
     penalty = "separable",
@@ -921,36 +950,46 @@ train_and_evaluate_continuous_weights <- function(
     select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
 
   if (length(y_test_scaled) > 0) {
-    ss_cont_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% ss_continuous_samples$beta
-    )
-
-    ssl_cont_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% ssl_continuous_fit
-    )
-
-    # store mse
     mse <- tibble(
       y = (y_test_scaled * y_scale_factor + y_loc_factor)[, 1],
-      # rescaling the mse by the original units
-      ss_cont_squared_error = ss_cont_se[, 1] * (y_scale_factor^2),
-      ssl_cont_squared_error = ssl_cont_se[, 1] * (y_scale_factor^2)
+      ss_prob_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% ss_prob_samples$beta
+      )[, 1] *
+        y_scale_factor^2,
+      ssl_prob_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% ssl_prob_fit
+      )[, 1] *
+        y_scale_factor^2
     )
   } else {
     mse <- tibble()
   }
 
-  list(
-    "mse" = mse
-  )
+  list(mse = mse)
 }
 
+# ------------------------------------------------------------------------------
+# train_and_evaluate_non_ss
+#
+# Fits non-MCMC comparators: Lasso, horseshoe, LLM-Lasso, and SSL variants
+# (with and without LLM weights, using both BIC and a fixed lambda0 = n/2
+# selection rule).
+#
+# Arguments:
+#   seed           - Random seed
+#   partition      - Partition from train_test_split (discretized weights)
+#   prob_partition - Partition from train_test_split (direct probability weights)
+#   fixed_s        - If TRUE, fit fixed-sparsity SSL variants
+#   random_s       - If TRUE, fit random-sparsity SSL variants
+#   set_eta_range  - Eta grid for LSP-SSL
+#   set_sparsity   - Prior inclusion probability (used when fixed_s = TRUE)
+# ------------------------------------------------------------------------------
 train_and_evaluate_non_ss <- function(
   seed,
   partition,
-  cont_partition,
+  prob_partition,
   fixed_s = FALSE,
   random_s = TRUE,
   set_eta_range = NULL,
@@ -961,46 +1000,42 @@ train_and_evaluate_non_ss <- function(
   X_test_scaled <- partition$X_test_scaled
   y_test_scaled <- partition$y_test_scaled
   weights <- partition$weights
-  cont_weights <- cont_partition$weights # continuous importance weights
+  prob_weights <- prob_partition$weights
   y_scale_factor <- partition$y_scale_factor
   y_loc_factor <- partition$y_loc_factor
 
   set.seed(seed)
 
-  # # lasso
-  # lasso_results <- glmnet::glmnet(
-  #   x = X_train_scaled,
-  #   y = y_train_scaled,
-  #   alpha = 1,
-  #   lambda = (glmnet::cv.glmnet(
-  #     X_train_scaled,
-  #     y_train_scaled,
-  #     alpha = 1
-  #   )$lambda.min)
-  # )
+  lasso_results <- glmnet::glmnet(
+    x = X_train_scaled,
+    y = y_train_scaled,
+    alpha = 1,
+    lambda = glmnet::cv.glmnet(
+      X_train_scaled,
+      y_train_scaled,
+      alpha = 1
+    )$lambda.min
+  )
 
-  # # horseshoe prior
-  # hs_fit <- Mhorseshoe::approx_horseshoe(
-  #   y = y_train_scaled,
-  #   X = cbind(1, X_train_scaled),
-  #   burn = 10000,
-  #   iter = 5000
-  # )
-  # hs_coef <- hs_fit$BetaHat
-  # rm(hs_fit)
-  # gc()
+  hs_fit <- Mhorseshoe::approx_horseshoe(
+    y = y_train_scaled,
+    X = cbind(1, X_train_scaled),
+    burn = 10000,
+    iter = 5000
+  )
+  hs_coef <- hs_fit$BetaHat
+  rm(hs_fit)
+  gc()
 
-  # # llm-lasso
-  # llm_lasso_results <- llm_lasso_simp(
-  #   X_train = X_train_scaled,
-  #   y_train = y_train_scaled,
-  #   weights = weights$importance,
-  #   elastic_net = 1,
-  #   regression = TRUE
-  # )$coef
+  llm_lasso_results <- llm_lasso_simp(
+    X_train = X_train_scaled,
+    y_train = y_train_scaled,
+    weights = weights$importance,
+    elastic_net = 1,
+    regression = TRUE
+  )$coef
 
   if (fixed_s) {
-    # spike-and-slab LASSO
     ssl_fixed_fit <- lsp_ssl_map(
       X_train_scaled,
       y_train_scaled,
@@ -1010,12 +1045,8 @@ train_and_evaluate_non_ss <- function(
       variance = "fixed",
       sparsity = set_sparsity
     )
-
-    # select model with bic
     ssl_bic_fixed <- ssl_fixed_fit |>
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
-
-    # select model with lambda_0 = n/2 (approximately 50th index)
     ssl_n_2_fixed <- c(ssl_fixed_fit$intercept[50], ssl_fixed_fit$beta[, 50])
 
     lsp_ssl_fixed_fit <- lsp_ssl_map(
@@ -1027,16 +1058,14 @@ train_and_evaluate_non_ss <- function(
       variance = "fixed",
       sparsity = set_sparsity
     )
-    # select model with bic
     lsp_ssl_bic_fixed <- lsp_ssl_fixed_fit |>
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
-
-    # select model with lambda_0 = n/2 (approximately 50th index)
     lsp_ssl_n_2_fixed <- c(
       lsp_ssl_fixed_fit$intercept[50],
       lsp_ssl_fixed_fit$beta[, 50]
     )
   }
+
   if (random_s) {
     ssl_random_fit <- lsp_ssl_map(
       X_train_scaled,
@@ -1046,16 +1075,9 @@ train_and_evaluate_non_ss <- function(
       E_space = 0,
       weights = NULL
     )
-
-    # select model with bic
     ssl_bic_random <- ssl_random_fit |>
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
-
-    # select model with lambda_0 = n/2 (approximately 50th index)
-    ssl_n_2_random <- c(
-      ssl_random_fit$intercept[50],
-      ssl_random_fit$beta[, 50]
-    )
+    ssl_n_2_random <- c(ssl_random_fit$intercept[50], ssl_random_fit$beta[, 50])
 
     lsp_ssl_random_fit <- lsp_ssl_map(
       X_train_scaled,
@@ -1065,126 +1087,65 @@ train_and_evaluate_non_ss <- function(
       penalty = "adaptive",
       variance = "fixed"
     )
-    # select model with bic
     lsp_ssl_bic_random <- lsp_ssl_random_fit |>
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
-
-    # select model with lambda_0 = n/2 (approximately 50th index)
     lsp_ssl_n_2_random <- c(
       lsp_ssl_random_fit$intercept[50],
       lsp_ssl_random_fit$beta[, 50]
     )
   }
 
-  ssl_continuous_fit <- lsp_ssl_map(
+  # Probability-weight SSL: importance weights used directly as sparsity
+  ssl_prob_fit <- lsp_ssl_map(
     X_train_scaled,
     y_train_scaled,
     penalty = "separable",
     variance = "fixed",
     E_space = 0,
     weights = NULL,
-    sparsity = cont_weights$importance
+    sparsity = prob_weights$importance
   )
-
-  # select model with bic
-  ssl_cont_bic <- ssl_continuous_fit |>
+  ssl_prob_bic <- ssl_prob_fit |>
     select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
-
-  # select model with lambda_0 = n/2 (approximately 50th index)
-  ssl_cont_n_2 <- c(
-    ssl_continuous_fit$intercept[50],
-    ssl_continuous_fit$beta[, 50]
+  ssl_prob_n_2 <- c(
+    ssl_prob_fit$intercept[50],
+    ssl_prob_fit$beta[, 50]
   )
 
   if (length(y_test_scaled) > 0) {
-    # lasso_se <- squared_error(
-    #   y_test_scaled,
-    #   predict(lasso_results, newx = X_test_scaled)
-    # )
-    # hs_se <- squared_error(
-    #   y_test_scaled,
-    #   cbind(1, X_test_scaled) %*% as.matrix(hs_coef)
-    # )
-    # llm_lasso_se <- squared_error(
-    #   y_test_scaled,
-    #   cbind(1, X_test_scaled) %*% llm_lasso_results
-    # )
-
-    if (fixed_s) {
-      ssl_bic_fixed_se <- squared_error(
-        y_test_scaled,
-        cbind(1, X_test_scaled) %*% ssl_bic_fixed
-      )
-      ssl_n_2_fixed_se <- squared_error(
-        y_test_scaled,
-        cbind(1, X_test_scaled) %*% ssl_n_2_fixed
-      )
-      lsp_ssl_bic_fixed_se <- squared_error(
-        y_test_scaled,
-        cbind(1, X_test_scaled) %*% lsp_ssl_bic_fixed
-      )
-      lsp_ssl_n_2_fixed_se <- squared_error(
-        y_test_scaled,
-        cbind(1, X_test_scaled) %*% lsp_ssl_n_2_fixed
-      )
+    se <- function(coef_vec) {
+      squared_error(y_test_scaled, cbind(1, X_test_scaled) %*% coef_vec)[, 1] *
+        y_scale_factor^2
     }
-
-    if (random_s) {
-      ssl_bic_random_se <- squared_error(
-        y_test_scaled,
-        cbind(1, X_test_scaled) %*% ssl_bic_random
-      )
-      ssl_n_2_random_se <- squared_error(
-        y_test_scaled,
-        cbind(1, X_test_scaled) %*% ssl_n_2_random
-      )
-      lsp_ssl_bic_random_se <- squared_error(
-        y_test_scaled,
-        cbind(1, X_test_scaled) %*% lsp_ssl_bic_random
-      )
-      lsp_ssl_n_2_random_se <- squared_error(
-        y_test_scaled,
-        cbind(1, X_test_scaled) %*% lsp_ssl_n_2_random
-      )
-    }
-    ssl_cont_bic_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% ssl_cont_bic
-    )
-    ssl_cont_n_2_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% ssl_cont_n_2
-    )
 
     mse_list <- list(
       y = (y_test_scaled * y_scale_factor + y_loc_factor)[, 1],
-      # lasso_squared_error = lasso_se[, 1] * (y_scale_factor^2),
-      # hs_squared_error = hs_se[, 1] * (y_scale_factor^2),
-      # llm_lasso_squared_error = llm_lasso_se[, 1] * (y_scale_factor^2),
-      ssl_cont_bic_squared_error = ssl_cont_bic_se[, 1] * (y_scale_factor^2),
-      ssl_cont_n_2_squared_error = ssl_cont_n_2_se[, 1] * (y_scale_factor^2)
+      lasso_squared_error = squared_error(
+        y_test_scaled,
+        predict(lasso_results, newx = X_test_scaled)
+      )[, 1] *
+        y_scale_factor^2,
+      hs_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% as.matrix(hs_coef)
+      )[, 1] *
+        y_scale_factor^2,
+      llm_lasso_squared_error = se(llm_lasso_results),
+      ssl_prob_bic_squared_error = se(ssl_prob_bic),
+      ssl_prob_n_2_squared_error = se(ssl_prob_n_2)
     )
 
     if (fixed_s) {
-      mse_list$ssl_bic_fixed_squared_error <- ssl_bic_fixed_se[, 1] *
-        (y_scale_factor^2)
-      mse_list$ssl_n_2_fixed_squared_error <- ssl_n_2_fixed_se[, 1] *
-        (y_scale_factor^2)
-      mse_list$lsp_ssl_bic_fixed_squared_error <- lsp_ssl_bic_fixed_se[, 1] *
-        (y_scale_factor^2)
-      mse_list$lsp_ssl_n_2_fixed_squared_error <- lsp_ssl_n_2_fixed_se[, 1] *
-        (y_scale_factor^2)
+      mse_list$ssl_bic_fixed_squared_error <- se(ssl_bic_fixed)
+      mse_list$ssl_n_2_fixed_squared_error <- se(ssl_n_2_fixed)
+      mse_list$lsp_ssl_bic_fixed_squared_error <- se(lsp_ssl_bic_fixed)
+      mse_list$lsp_ssl_n_2_fixed_squared_error <- se(lsp_ssl_n_2_fixed)
     }
-
     if (random_s) {
-      mse_list$ssl_bic_random_squared_error <- ssl_bic_random_se[, 1] *
-        (y_scale_factor^2)
-      mse_list$ssl_n_2_random_squared_error <- ssl_n_2_random_se[, 1] *
-        (y_scale_factor^2)
-      mse_list$lsp_ssl_bic_random_squared_error <- lsp_ssl_bic_random_se[, 1] *
-        (y_scale_factor^2)
-      mse_list$lsp_ssl_n_2_random_squared_error <- lsp_ssl_n_2_random_se[, 1] *
-        (y_scale_factor^2)
+      mse_list$ssl_bic_random_squared_error <- se(ssl_bic_random)
+      mse_list$ssl_n_2_random_squared_error <- se(ssl_n_2_random)
+      mse_list$lsp_ssl_bic_random_squared_error <- se(lsp_ssl_bic_random)
+      mse_list$lsp_ssl_n_2_random_squared_error <- se(lsp_ssl_n_2_random)
     }
 
     mse <- tibble::as_tibble(mse_list)
@@ -1192,13 +1153,34 @@ train_and_evaluate_non_ss <- function(
     mse <- tibble()
   }
 
-  list("mse" = mse)
+  list(mse = mse)
 }
 
+# ------------------------------------------------------------------------------
+# train_and_evaluate_spike_and_slab
+#
+# Fits and compares three SS variants on a single partition:
+#   (1) Standard SS (no weights)
+#   (2) LSP-SS (LLM weights, eta prior)
+#   (3) Probability-weight SS (importance weights as direct inclusion probs)
+#
+# Arguments:
+#   seed           - Random seed
+#   partition      - Partition from train_test_split (discretized weights)
+#   prob_partition - Partition from train_test_split (probability importance weights)
+#   fixed_s        - If TRUE, use fixed-sparsity samplers
+#   random_s       - If TRUE, use random-sparsity samplers
+#                    (exactly one of fixed_s / random_s should be TRUE)
+#   set_tau        - Slab variance
+#   set_eta_range  - Eta grid for LSP-SS
+#   set_sparsity   - Prior inclusion probability (used when fixed_s = TRUE)
+#   set_burn_in    - Burn-in iterations
+#   set_iter       - Total iterations
+# ------------------------------------------------------------------------------
 train_and_evaluate_spike_and_slab <- function(
   seed,
   partition,
-  cont_partition,
+  prob_partition,
   random_s = TRUE,
   fixed_s = FALSE,
   set_tau = 2,
@@ -1212,14 +1194,13 @@ train_and_evaluate_spike_and_slab <- function(
   X_test_scaled <- partition$X_test_scaled
   y_test_scaled <- partition$y_test_scaled
   weights <- partition$weights
+  prob_weights <- prob_partition$weights
   y_scale_factor <- partition$y_scale_factor
   y_loc_factor <- partition$y_loc_factor
-  cont_weights <- cont_partition$weights # continuous importance weights
 
   set.seed(seed)
 
   if (fixed_s) {
-    # --- Standard Spike-and-Slab (no LLM weights) ---
     ss_samples <- lsp_fixed_ss_gibbs_sampler(
       X_train_scaled,
       y_train_scaled,
@@ -1233,14 +1214,12 @@ train_and_evaluate_spike_and_slab <- function(
       init_weights = FALSE,
       return_samples = FALSE
     )
-
-    # --- LSP Spike-and-Slab (LLM weights, fixed sparsity) ---
     lsp_ss_samples <- lsp_fixed_ss_gibbs_sampler(
       X_train_scaled,
       y_train_scaled,
       weights = weights$importance,
       E_space = set_eta_range,
-      s = set_sparsity,
+      sparsity = set_sparsity,
       a_sigma = 1,
       b_sigma = 1,
       tau = set_tau,
@@ -1248,9 +1227,7 @@ train_and_evaluate_spike_and_slab <- function(
       iter = set_iter,
       return_samples = FALSE
     )
-  }
-  if (random_s) {
-    # --- Standard Spike-and-Slab (random sparsity) ---
+  } else if (random_s) {
     ss_samples <- lsp_random_ss_gibbs_sampler(
       X_train_scaled,
       y_train_scaled,
@@ -1266,8 +1243,6 @@ train_and_evaluate_spike_and_slab <- function(
       init_weights = FALSE,
       return_samples = FALSE
     )
-
-    # --- LSP Spike-and-Slab (random sparsity) ---
     lsp_ss_samples <- lsp_random_ss_gibbs_sampler(
       X_train_scaled,
       y_train_scaled,
@@ -1285,15 +1260,15 @@ train_and_evaluate_spike_and_slab <- function(
     )
   }
 
-  # --- Continuous-weight Spike-and-Slab (always fixed-sparsity style) ---
-  ss_continuous_samples <- lsp_fixed_ss_gibbs_sampler(
+  # Probability-weight SS: importance weights used directly as sparsity
+  ss_prob_samples <- lsp_fixed_ss_gibbs_sampler(
     X_train_scaled,
     y_train_scaled,
     weights = NULL,
     E_space = 0,
+    sparsity = prob_weights$importance,
     a_sigma = 1,
     b_sigma = 1,
-    sparsity = cont_weights$importance, # weights set inclusion probability directly
     tau = set_tau,
     burn_in = set_burn_in,
     iter = set_iter,
@@ -1301,28 +1276,27 @@ train_and_evaluate_spike_and_slab <- function(
   )
 
   if (length(y_test_scaled) > 0) {
-    ss_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% ss_samples$beta
-    )
-    lsp_ss_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% lsp_ss_samples$beta
-    )
-    ss_cont_se <- squared_error(
-      y_test_scaled,
-      cbind(1, X_test_scaled) %*% ss_continuous_samples$beta
-    )
-
     mse <- tibble(
       y = (y_test_scaled * y_scale_factor + y_loc_factor)[, 1],
-      ss_squared_error = ss_se[, 1] * (y_scale_factor^2),
-      lsp_ss_squared_error = lsp_ss_se[, 1] * (y_scale_factor^2),
-      ss_cont_squared_error = ss_cont_se[, 1] * (y_scale_factor^2)
+      ss_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% ss_samples$beta
+      )[, 1] *
+        y_scale_factor^2,
+      lsp_ss_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% lsp_ss_samples$beta
+      )[, 1] *
+        y_scale_factor^2,
+      ss_prob_squared_error = squared_error(
+        y_test_scaled,
+        cbind(1, X_test_scaled) %*% ss_prob_samples$beta
+      )[, 1] *
+        y_scale_factor^2
     )
   } else {
     mse <- tibble()
   }
 
-  list("mse" = mse)
+  list(mse = mse)
 }
