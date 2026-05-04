@@ -3,12 +3,12 @@
 # Utility functions for the AKI real-data analysis. Covers data preparation,
 # cross-validation partitioning, and six train-and-evaluate routines spanning
 # different model families and weight integration strategies:
-#   train_and_evaluate_baselines          — weight-free baseline models
-#   train_and_evaluate_fixed_eta          — LSP at a user-specified eta
-#   train_and_evaluate_random_eta         — LSP with discrete uniform prior on eta
+#   train_and_evaluate_baselines           — weight-free baseline models
+#   train_and_evaluate_fixed_eta           — LSP at a user-specified eta
+#   train_and_evaluate_random_eta          — LSP with discrete uniform prior on eta
 #   train_and_evaluate_probability_weights — LLM weights used as direct inclusion probs
-#   train_and_evaluate_non_ss             — SSL and LLM-Lasso comparisons
-#   train_and_evaluate_spike_and_slab     — SS comparisons across weight strategies
+#   train_and_evaluate_non_ss              — SSL and LLM-Lasso comparisons
+#   train_and_evaluate_spike_and_slab      — SS comparisons across weight strategies
 
 # ------------------------------------------------------------------------------
 # Dependencies
