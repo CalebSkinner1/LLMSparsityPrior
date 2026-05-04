@@ -1,40 +1,63 @@
-# R script for running simulations in LLM Sparsity Prior for Robust Feature Selection
-# source("Simulations/weight_quality_support.R")
-source("weight_quality_support.R")
+# Simulation Driver — Weight Quality Study
+#
+# Evaluates LSP model performance across a grid of sample sizes (n_range) and
+# synthetic weight quality levels (phi_range). For each n, baseline models
+# (no LLM weights) are fit once and cached; LSP and LLM-Lasso models are then
+# fit for each phi level reusing the same datasets. Results are written to one
+# CSV per (phi, n) combination.
+#
+# Depends on: Simulations/weight_quality_support.R
 
-# simulation settings -----------------------------------------------------
+source("Simulations/weight_quality_support.R")
 
+# ------------------------------------------------------------------------------
+# Simulation Settings
+# ------------------------------------------------------------------------------
+
+# Data Generating Process
 p <- 1000
 n_range <- c(100, 250)
 s <- 20
 true_gamma <- c(rep(0, p - s), rep(1, s))
 effect_size <- 1
-n_replications <- 500
 Xvar <- 1
 Xcorr <- 0.5
 y_sd <- 1
 cov_mat <- simstudy::genCorMat(p, cors = rep(Xcorr, choose(p, 2)))
+
+# Sampler hyperparameters
 a_sigma <- 1
 b_sigma <- 1
 tau <- 1
 sparsity <- 0.01
-eta_range <- seq(from = 0, to = 10, by = 1) # set so equal among all weight settings
+eta_range <- seq(from = 0, to = 10, by = 1)
 iter <- 30000
 burn_in <- 5000
+
+# Model variants to run
 random_s <- TRUE
 fixed_s <- FALSE
 
-# select grid of weight agreements to evaluate
+# Simulation grid
 phi_range <- c(0.5, 0.6, 0.7, 0.75, seq(0.8, 1.0, by = 0.01))
+n_replications <- 500
+
+# ------------------------------------------------------------------------------
+# Parallel Backend
+# ------------------------------------------------------------------------------
 
 total_cores <- parallel::detectCores(logical = FALSE)
 cores <- min(total_cores, 50)
-
 plan(multicore, workers = cores)
 options(future.globals.maxSize = 2000 * 1024^2)
 
-# run simulations ----------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Simulation Loop
+# ------------------------------------------------------------------------------
+
 for (n in n_range) {
+  # Generate all replicate datasets and fit baseline models once,
+  # then reuse across phi levels.
   message(paste0("Generating data and baseline models for n = ", n, "..."))
 
   cached_baselines <- future_map(
@@ -46,7 +69,7 @@ for (n in n_range) {
   )
 
   for (phi in phi_range) {
-    # select weight quality phi
+    # Construct a synthetic weight vector achieving L1 agreement level phi
     message(paste0("   evaluating weights for phi = ", phi))
     weights <- generate_weights(phi, true_gamma, categories = 5)
     l1_agreement <- l1_weight_agreement(true_gamma, weights)
@@ -56,6 +79,8 @@ for (n in n_range) {
 
     file_name <- paste0("weights", phi, "_n", n, ".csv")
 
+    # Fit LSP and LLM-Lasso models across all replicates in parallel;
+    # bind results into a long tibble indexed by simulation ID and method
     sim_results <- future_map(
       cached_baselines,
       function(baseline) {
