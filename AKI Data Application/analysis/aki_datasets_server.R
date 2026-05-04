@@ -104,7 +104,6 @@ outcome <- "creatinine_ratio"
 folds <- 5
 repetitions <- 10
 
-
 tau_range <- 1
 sparsity <- 0.01
 eta_range <- NULL # NULL triggers default prior
@@ -172,7 +171,8 @@ for (j in seq_along(data_weights_list)) {
         partition = partitions[[.x]],
         prob_partition = prob_partitions[[.x]],
         seed = .x,
-        sparsity_type = sparsity_type,
+        random_s = random_s,
+        fixed_s = fixed_s,
         set_tau = tau,
         set_eta_range = eta_range,
         set_sparsity = sparsity,
