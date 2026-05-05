@@ -75,7 +75,7 @@ lsp_ssl_fit <- lsp_ssl_map(
   weights = weights,
   penalty = "adaptive")
 
- # Select model from descent (use BIC)
+ # Select model from descent (use BIC to select lambda_0)
  lsp_ssl_beta_est <- select_lambda0_bic(lsp_ssl_fit, X = X, y = y)
 ```
 
