@@ -34,7 +34,7 @@ This repository is organized to support three primary objectives:
 │   ├──── prompty_adjust_task.ipynb                       # Prompt to generate LLM weights from GPT 5.2o (Task Definition Adjusted)
 │   ├──── prompty_original.ipynb                          # Prompt to generate LLM weights from GPT 5.2o (Original)
 │   ├──── prompty_adjust_probabilities.ipynb              # Prompt to generate Naive LLM weights from GPT 5.2o (Probabilities)
-│   ├── weights/                # directory of generated weights: five prompt variants by five runs
+│   ├── weights/                # directory of generated weights: five prompt variants by five runs and naive weights
 └── README.md
 ```
 
@@ -44,13 +44,19 @@ The core method, simulation scripts, and data analysis are written in R. To run 
 install.packages(c("MASS", "tidyverse", "hypergeo", "glmnet", "furrr", "pROC", "tidymodels", "simstudy", "Mhorseshoe"))
 ```
 
+Spike-and-Slab Lasso files must be compiled locally. Run the following command in your terminal at the repository root.
+```bash
+cd LSP_SSL
+R CMD SHLIB LSP_SSL_descent.c LSP_SSL_functions.c -o lsp_ssl.so
+```
+
 ## Usage Example
 ```r
 source("LSP_SS/LSP_SSR_random_s.R")
 source("LSP_SSL/LSP_SSLR.R")
 
 # Generate synthetic data
-n <- 50; p <- 100; signals <- 5
+set.seed(1); n <- 50; p <- 100; signals <- 5
 
 X <- MASS::mvrnorm(n, mu = rep(0, p), diag(p))
 beta_true <- c(rep(0, p - signals), rep(1, signals))
@@ -77,13 +83,10 @@ lsp_ssl_fit <- lsp_ssl_map(
 
  # Select model from descent (use BIC to select lambda_0)
  lsp_ssl_beta_est <- select_lambda0_bic(lsp_ssl_fit, X = X, y = y)
-```
 
-```r
  # print estimates
  round(lsp_ss_beta_est, digits = 2)
-```
-
-```r
+ # [1] 0.76 0.00 0.00 ... 0.00 0.85 1.05 1.11 0.86 1.15
  round(as.vector(lsp_ssl_beta_est), digits = 2)
+ # [1] 0.78 0.00 0.00 ... 0.00 0.84 1.05 1.12 0.86 1.15
 ```
