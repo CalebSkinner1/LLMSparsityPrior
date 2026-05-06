@@ -66,7 +66,7 @@ y <- X %*% beta_true + alpha_true + rnorm(n, 0, sd = 1)
 # Define LLM-generated feature weights (in practice, these come from the LLM prompt)
 weights <- c(rep(1, p - signals), rep(5, signals)) # perfect weights
 
-# Run Sampler with default settings
+# Run ADS sampler with default settings
 lsp_ss_fit <- lsp_random_ss_gibbs_sampler(
   X = X,
   y = y,
@@ -75,6 +75,7 @@ lsp_ss_fit <- lsp_random_ss_gibbs_sampler(
 # Extract Posterior Means, etc.
 lsp_ss_beta_est <- colMeans(lsp_ss_fit$beta)
 
+# Run coordinate descent algorithm
 lsp_ssl_fit <- lsp_ssl_map(
   X = X,
   y = y,
@@ -84,7 +85,7 @@ lsp_ssl_fit <- lsp_ssl_map(
  # Select model from descent (use BIC to select lambda_0)
  lsp_ssl_beta_est <- select_lambda0_bic(lsp_ssl_fit, X = X, y = y)
 
- # print estimates
+ # Print estimates
  round(lsp_ss_beta_est, digits = 2)
  # [1] 0.76 0.00 0.00 ... 0.00 0.85 1.05 1.11 0.86 1.15
  round(as.vector(lsp_ssl_beta_est), digits = 2)
