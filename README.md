@@ -14,19 +14,19 @@ This repository is organized to support three primary objectives:
 │   ├── LSP_SSR_fixed_s.R             # MCMC Sampler for LSP (SS) with Fixed Sparsity
 │   └── LSP_SSR_random_s.R            # MCMC Sampler for LSP (SS) with Random Sparsity
 │── LSP_SSL/
-│   ├── LSP_SSLR.R             # R Function for MAP Estimation of LSP (SSL)
-│   ├── LSP_SSL_descent.c      # C code for coordinate descent algorithm (lightly edited from https://github.com/cran/SSLASSO)
-│   ├── LSP_SSL_functions.c    # C functions for the descent algorithm
+│   ├── LSP_SSLR.R                    # R Function for MAP Estimation of LSP (SSL)
+│   ├── LSP_SSL_descent.c             # C code for coordinate descent algorithm (lightly edited from https://github.com/cran/SSLASSO)
+│   ├── LSP_SSL_functions.c           # C functions for the descent algorithm
 ├── Simulations/
-│   ├── weight_quality_sims.R      # Main script to run simulations
-│   ├── eta_sensitivity_sims.R     # Script to run simulations on eta sensitivity analysis
-│   └── weight_quality_support.R   # Support functions for weight generation, metric computation, etc.
+│   ├── weight_quality_sims.R         # Main script to run simulations
+│   ├── eta_sensitivity_sims.R        # Script to run simulations on eta sensitivity analysis
+│   └── weight_quality_support.R      # Support functions for weight generation, metric computation, etc.
 ├── AKI Data Application/
 │   ├── analysis/
-│   ├──── aki_analysis_support.R   # Support functions for AKI Analysis
-│   ├──── aki_subsets.R            # Script to run analysis over five subsets
-│   ├──── aki_low_data.R           # Script to run analysis over low-data regime
-│   ├──── aki_weight_sensitivity.R # Script to run sensitivity analysis
+│   ├──── aki_analysis_support.R      # Support functions for AKI Analysis
+│   ├──── aki_subsets.R               # Script to run analysis over five subsets
+│   ├──── aki_low_data.R              # Script to run analysis over low-data regime
+│   ├──── aki_weight_sensitivity.R    # Script to run sensitivity analysis
 │   ├── weight_prompts/
 │   ├──── prompty_adjust_collinearity_constraints.ipynb   # Prompt to generate LLM weights from GPT 5.2o (Collinearity Constraints Adjusted)
 │   ├──── prompty_adjust_reasoning_structure.ipynb        # Prompt to generate LLM weights from GPT 5.2o (Reasoning Structure Adjusted)
@@ -34,7 +34,7 @@ This repository is organized to support three primary objectives:
 │   ├──── prompty_adjust_task.ipynb                       # Prompt to generate LLM weights from GPT 5.2o (Task Definition Adjusted)
 │   ├──── prompty_original.ipynb                          # Prompt to generate LLM weights from GPT 5.2o (Original)
 │   ├──── prompty_adjust_probabilities.ipynb              # Prompt to generate Naive LLM weights from GPT 5.2o (Probabilities)
-│   ├── weights/                # directory of generated weights: five prompt variants by five runs and naive weights
+│   ├── weights/                       # directory of generated weights: five prompt variants by five runs and naive weights
 └── README.md
 ```
 
