@@ -1,3 +1,5 @@
 /.vscode
 .DS_Store
 misc_files
+LSP_SSL/*.o
+LSP_SSL/*.so
