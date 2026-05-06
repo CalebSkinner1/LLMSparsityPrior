@@ -10,17 +10,6 @@ This repository is organized to support three primary objectives:
 ## Repository Structure
 ```text
 .
-├── LSP_SS/
-│   ├── LSP_SSR_fixed_s.R             # MCMC Sampler for LSP (SS) with Fixed Sparsity
-│   └── LSP_SSR_random_s.R            # MCMC Sampler for LSP (SS) with Random Sparsity
-│── LSP_SSL/
-│   ├── LSP_SSLR.R                    # R Function for MAP Estimation of LSP (SSL)
-│   ├── LSP_SSL_descent.c             # C code for coordinate descent algorithm (lightly edited from https://github.com/cran/SSLASSO)
-│   ├── LSP_SSL_functions.c           # C functions for the descent algorithm
-├── Simulations/
-│   ├── weight_quality_sims.R         # Main script to run simulations
-│   ├── eta_sensitivity_sims.R        # Script to run simulations on eta sensitivity analysis
-│   └── weight_quality_support.R      # Support functions for weight generation, metric computation, etc.
 ├── AKI Data Application/
 │   ├── analysis/
 │   ├──── aki_analysis_support.R      # Support functions for AKI Analysis
@@ -35,6 +24,17 @@ This repository is organized to support three primary objectives:
 │   ├──── prompty_original.ipynb                          # Prompt to generate LLM weights from GPT 5.2o (Original)
 │   ├──── prompty_adjust_probabilities.ipynb              # Prompt to generate Naive LLM weights from GPT 5.2o (Probabilities)
 │   ├── weights/                      # directory of generated weights: five prompt variants by five runs and naive weights
+├── LSP_SS/
+│   ├── LSP_SSR_fixed_s.R             # MCMC Sampler for LSP (SS) with Fixed Sparsity
+│   └── LSP_SSR_random_s.R            # MCMC Sampler for LSP (SS) with Random Sparsity
+│── LSP_SSL/
+│   ├── LSP_SSLR.R                    # R Function for MAP Estimation of LSP (SSL)
+│   ├── LSP_SSL_descent.c             # C code for coordinate descent algorithm (lightly edited from https://github.com/cran/SSLASSO)
+│   ├── LSP_SSL_functions.c           # C functions for the descent algorithm
+├── Simulations/
+│   ├── weight_quality_sims.R         # Main script to run simulations
+│   ├── eta_sensitivity_sims.R        # Script to run simulations on eta sensitivity analysis
+│   └── weight_quality_support.R      # Support functions for weight generation, metric computation, etc.
 └── README.md
 ```
 
