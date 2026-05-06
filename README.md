@@ -34,7 +34,7 @@ This repository is organized to support three primary objectives:
 │   ├──── prompty_adjust_task.ipynb                       # Prompt to generate LLM weights from GPT 5.2o (Task Definition Adjusted)
 │   ├──── prompty_original.ipynb                          # Prompt to generate LLM weights from GPT 5.2o (Original)
 │   ├──── prompty_adjust_probabilities.ipynb              # Prompt to generate Naive LLM weights from GPT 5.2o (Probabilities)
-│   ├── weights/                       # directory of generated weights: five prompt variants by five runs and naive weights
+│   ├── weights/                      # directory of generated weights: five prompt variants by five runs and naive weights
 └── README.md
 ```
 
