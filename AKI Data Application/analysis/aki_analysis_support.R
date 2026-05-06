@@ -500,17 +500,6 @@ train_test_split <- function(
 # Per-observation squared error
 squared_error <- function(y_true, pred) (y_true - pred)^2
 
-# BIC-based lambda selection for SSL: returns the coefficient vector
-# (intercept prepended) at the lambda0 minimizing BIC
-select_lambda0_bic <- function(ssl_object, X, y) {
-  n <- length(y)
-  rss <- apply(ssl_object$beta, 2, function(b) sum((y - X %*% b)^2))
-  df <- apply(ssl_object$beta, 2, function(b) sum(b != 0))
-  bic <- n * log(rss / n) + df * log(n)
-  best_idx <- which.min(bic)
-  c(ssl_object$intercept[, best_idx], ssl_object$beta[, best_idx])
-}
-
 # ------------------------------------------------------------------------------
 # train_and_evaluate_baselines
 #

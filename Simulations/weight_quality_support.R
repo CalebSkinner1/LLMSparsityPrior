@@ -421,31 +421,6 @@ llm_lasso_simp <- function(
   )
 }
 
-
-# ------------------------------------------------------------------------------
-# BIC-Based Lambda Selection for SSL
-#
-# Selects the lambda0 value along the SSL solution path that minimizes BIC,
-# and returns the corresponding coefficient vector with the intercept prepended.
-#
-# Arguments:
-#   ssl_object - Output of lsp_ssl_map
-#   X          - Uncentered predictor matrix
-#   y          - Response vector
-#
-# Returns:
-#   Numeric coefficient vector (intercept, beta_1, ..., beta_p)
-# ------------------------------------------------------------------------------
-select_lambda0_bic <- function(ssl_object, X, y) {
-  n <- length(y)
-  rss <- apply(ssl_object$beta, 2, function(b) sum((y - X %*% b)^2))
-  df <- apply(ssl_object$beta, 2, function(b) sum(b != 0))
-  bic <- n * log(rss / n) + df * log(n)
-
-  best_idx <- which.min(bic)
-  c(ssl_object$intercept[, best_idx], ssl_object$beta[, best_idx])
-}
-
 # ------------------------------------------------------------------------------
 # Simulation Functions
 #
