@@ -1,11 +1,11 @@
 # LLM Sparsity Prior for Robust Feature Selection
 
-This repository contains implementation of the **LLM Sparsity Prior**, a Bayesian variable selection framework that integrates *a priori* feature importance synthesized by Large Language Models (LLM) into the Spike-and-Slab and Spike-and-Slab Lasso priors.
+This repository contains an implementation of the **LLM Sparsity Prior**, a Bayesian variable selection framework that integrates *a priori* feature importance synthesized by Large Language Models (LLMs) into the Spike-and-Slab and Spike-and-Slab Lasso priors.
 
 This repository is organized to support three primary objectives:
 1) Core implementation: Efficient posterior estimation for LSP methods.
-2) Simulations: Code to replicate the comparative simulation studies presented in the paper.
-3) Data Application: Prompt engineering templates and analysis code for the Acute Kidney Injury (AKI) application.
+2) Simulations: Comparative simulation studies.
+3) Data Application: Prompt engineering templates and Acute Kidney Injury (AKI) analysis.
 
 ## Repository Structure
 ```text
@@ -15,11 +15,11 @@ This repository is organized to support three primary objectives:
 │   └── LSP_SSR_random_s.R            # MCMC Sampler for LSP (SS) with Random Sparsity
 │── LSP_SSL/
 │   ├── LSP_SSLR.R             # R Function for MAP Estimation of LSP (SSL)
-│   ├── LSP_SSL_descent.c      # C code for coordinate descent algorithm (lightly edited from github.com/cran/SSLASSO)
+│   ├── LSP_SSL_descent.c      # C code for coordinate descent algorithm (lightly edited from https://github.com/cran/SSLASSO)
 │   ├── LSP_SSL_functions.c    # C functions for the descent algorithm
 ├── Simulations/
 │   ├── weight_quality_sims.R      # Main script to run simulations
-│   ├── eta_sensitivity_sims.R     # Script runs simulations on eta sensitivity analysis
+│   ├── eta_sensitivity_sims.R     # Script to run simulations on eta sensitivity analysis
 │   └── weight_quality_support.R   # Support functions for weight generation, metric computation, etc.
 ├── AKI Data Application/
 │   ├── analysis/
@@ -41,7 +41,7 @@ This repository is organized to support three primary objectives:
 ## Installation and Dependencies
 The core method, simulation scripts, and data analysis are written in R. To run these, be sure the following packages are installed:
 ```r
-install.packages(c("MASS", "tidyverse", "hypergeo", "glmnet", "parallel", "furrr", "pROC", "tidymodels", "simstudy", "Mhorseshoe"))
+install.packages(c("MASS", "tidyverse", "hypergeo", "glmnet", "furrr", "pROC", "tidymodels", "simstudy", "Mhorseshoe"))
 ```
 
 ## Usage Example
@@ -79,4 +79,11 @@ lsp_ssl_fit <- lsp_ssl_map(
  lsp_ssl_beta_est <- select_lambda0_bic(lsp_ssl_fit, X = X, y = y)
 ```
 
+```r
+ # print estimates
+ round(lsp_ss_beta_est, digits = 2)
+```
 
+```r
+ round(as.vector(lsp_ssl_beta_est), digits = 2)
+```
