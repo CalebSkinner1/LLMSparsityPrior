@@ -4,3 +4,4 @@ LSP_SSL/*.so
 .DS_Store
 air.toml
 misc_files
+README.html
