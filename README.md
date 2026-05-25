@@ -227,3 +227,6 @@ Aggregated across 500 replications, LSP methods consistently match or outperform
 <p align="center">
   <img src="README_files/weight_quality_sims.png" width="75%"/>
 </p>
+
+## Citation
+Skinner, C., Guo, Y., & Li, M. (2026). LLM Sparsity Prior for Robust Feature Selection. *arXiv preprint* arXiv:2605.23102. https://arxiv.org/abs/2605.23102
