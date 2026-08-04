@@ -5,7 +5,7 @@
 # with five independent LLM runs. The over-80 subgroup is used throughout.
 # Results are written to one CSV per weight set.
 message("loading functions...")
-source("AKI Data Application/analysis/aki_analysis_support.R")
+source("AKI_Data_Application/analysis/aki_analysis_support.R")
 
 # ------------------------------------------------------------------------------
 # Load and Filter Data
@@ -47,7 +47,7 @@ weight_names <- c(
 )
 
 aki_weights_list <- map(
-  str_c("AKI Data Application/weights/", weight_names),
+  str_c("AKI_Data_Application/weights/", weight_names),
   read_weights_file
 )
 names(aki_weights_list) <- weight_names
