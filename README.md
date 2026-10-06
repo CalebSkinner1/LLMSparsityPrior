@@ -303,28 +303,7 @@ The application predicts postoperative AKI (creatinine ratio at hour 60) in card
  
 `<subgroup>` ∈ {`female_smoker`, `black_men`, `liver_disease`, `immunocompromised`}. All weights were generated with `gpt-5.2`.
 
-## Citation
- 
-If you use this code, please cite:
- 
-```bibtex
-@article{skinner2026lsp,
-  title   = {LLM Sparsity Prior for Robust Feature Selection},
-  author  = {Skinner, Caleb and Guo, Yihan and Li, Meng},
-  journal = {arXiv preprint arXiv:2605.23102},
-  year    = {2026},
-  url     = {https://arxiv.org/abs/2605.23102}
-}
-```
-
 ## Acknowledgments
  
 - The SSL coordinate descent is adapted from the [SSLASSO](https://github.com/cran/SSLASSO) package (Ročková & George, *JASA*, 2018).
 - The LLM-Lasso comparison is adapted from [Zhang et al.](https://github.com/pilancilab/LLM-Lasso)
-
-
-## License
- 
-Released under the [MIT License](LICENSE).
- 
-<!-- Contact: Caleb Skinner (cs222@rice.edu) -->
