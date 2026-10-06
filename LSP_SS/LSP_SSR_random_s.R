@@ -5,6 +5,8 @@
 # Metropolis-Hastings step on the logit scale. The concentration parameter
 # eta is sampled from a discrete grid.
 
+source("utils.R") # load helpers
+
 # ------------------------------------------------------------------------------
 # Log Prior on gamma | s, u
 #
@@ -25,22 +27,16 @@ compute_log_prior_gamma <- function(gamma, s, u) {
   log_prob
 }
 
-# ------------------------------------------------------------------------------
-# Draw one Element of x
-#
-# Safe replacement for sample(x)[1], which draws from 1:x when x is a single number >= 1.
-# ------------------------------------------------------------------------------
-pick_one <- function(x) x[sample.int(length(x), 1)]
-
 
 # ------------------------------------------------------------------------------
-# Log-Posterior (unnormalized, marginalizing over beta and sigma^2)
+# Log-Posterior (unnormalized, marginalizing over alpha, beta and sigma^2)
 #
 # Arguments:
 #   Z        - Selected design matrix with intercept column prepended: cbind(1, X[, gamma == 1])
 #   Z_gram   - Precomputed crossprod(Z)
 #   y        - Response vector (length n)
-#   tau      - Slab variance: beta_j ~ N(0, tau * sigma^2)
+#   tau      - Slab variance: beta_j ~ N(0, tau * sigma^2); the
+#              intercept alpha has a flat prior
 #   gamma    - Binary inclusion vector (length p)
 #   a_sigma  - Shape hyperparameter for the inverse-gamma prior on sigma^2
 #   b_sigma  - Rate hyperparameter for the inverse-gamma prior on sigma^2
@@ -66,7 +62,9 @@ lsp_random_ss_log_posterior <- function(
 ) {
   n_gam <- ncol(Z)
 
-  Q <- Z_gram + diag(n_gam) / tau
+  # Flat prior on the intercept (first column of Z); slab prior on the rest
+  prior_prec <- diag(c(0, rep(1 / tau, n_gam - 1)), nrow = n_gam)
+  Q <- Z_gram + prior_prec
   cholQ <- chol(Q)
   log_detQ <- 2 * sum(log(diag(cholQ)))
 
@@ -75,21 +73,22 @@ lsp_random_ss_log_posterior <- function(
   y_Z <- crossprod(Z, y)
   quadratic_term <- as.numeric(t(y_Z) %*% chol2inv(cholQ) %*% y_Z)
 
-  -n_gam /
+  -(n_gam - 1) /
     2 *
     log(tau) -
     .5 * log_detQ -
-    (n / 2 + a_sigma) * log(.5 * (sum(y^2) - quadratic_term) + b_sigma) +
+    ((n - 1) / 2 + a_sigma) *
+      log(.5 * (sum(y^2) - quadratic_term) + b_sigma) +
     model_prior
 }
 
 # ------------------------------------------------------------------------------
-# Metropolis Log-Acceptance Rate
+# Log-Posterior Ratio
 #
 # Computes log[ p(gamma_new | data) / p(gamma_old | data) ] for use in
 # the Metropolis-Hastings step of the sampler.
 # ------------------------------------------------------------------------------
-lsp_random_ss_log_acceptance_rate <- function(
+lsp_random_ss_log_posterior_ratio <- function(
   Z_old,
   Z_old_gram,
   Z_new,
@@ -139,14 +138,21 @@ lsp_random_ss_log_acceptance_rate <- function(
 # via a concentration parameter eta sampled from a discrete grid.
 #
 # Arguments:
-#   X                - n x p design matrix (uncentered; intercept added internally)
+#   X                - n x p design matrix; columns are standardized internally
+#                      and coefficients are returned on the original scale
+#                      (intercept added internally)
 #   y                - Response vector (length n)
 #   weights          - Optional LLM-derived weight vector (length p); NULL disables
 #   E_space          - Grid of eta values controlling weight concentration.
 #                      NULL triggers automatic grid search; 0 disables weighting.
+#   eta_pi_0         - Prior probability that eta = 0; the remaining mass is
+#                      split uniformly over the nonzero values of E_space. Set to
+#                      0 to fix eta at a single value (e.g., E_space = 2,
+#                      eta_pi_0 = 0)
 #   a_sigma          - Shape hyperparameter for the inverse-gamma prior on sigma^2
 #   b_sigma          - Rate hyperparameter for the inverse-gamma prior on sigma^2
-#   tau              - Slab variance: beta_j ~ N(0, tau * sigma^2)
+#   tau              - Slab variance: beta_j ~ N(0, tau * sigma^2); the
+#                      intercept alpha has a flat prior
 #   a_s              - First shape parameter of the Beta(a_s, b_s) prior on s
 #   b_s              - Second shape parameter of the Beta(a_s, b_s) prior on s;
 #                      defaults to p following Rockova & George (2018)
@@ -168,6 +174,7 @@ lsp_random_ss_log_acceptance_rate <- function(
 # Returns:
 #   A list with components:
 #     beta       - Posterior draws (or mean) of the full coefficient vector
+#                  (intercept first), on the original scale of X
 #     gamma      - Posterior draws (or mean) of the inclusion indicators
 #     invsigma_2 - Posterior draws (or mean) of the inverse noise variance
 #     eta        - Posterior draws (or mean) of the concentration parameter
@@ -181,6 +188,7 @@ lsp_random_ss_gibbs_sampler <- function(
   y,
   weights = NULL,
   E_space = NULL,
+  eta_pi_0 = 0.5,
   a_sigma = 1,
   b_sigma = 1,
   tau = 1,
@@ -196,6 +204,45 @@ lsp_random_ss_gibbs_sampler <- function(
   init_weights = TRUE,
   return_samples = TRUE
 ) {
+  # --------------------------------------------------------------------------
+  # Validate inputs and standardize X
+  # --------------------------------------------------------------------------
+  X <- as.matrix(X)
+  y <- as.numeric(y)
+
+  if (!is.numeric(X)) {
+    stop("X must be a numeric matrix")
+  }
+  if (length(y) != nrow(X)) {
+    stop("y must have length equal to nrow(X) (", nrow(X), ")")
+  }
+  if (anyNA(X) || anyNA(y)) {
+    stop("Missing data (NA's) detected. Eliminate missing data before calling.")
+  }
+  if (!is.null(weights)) {
+    if (length(weights) != ncol(X)) {
+      stop("weights must have length equal to ncol(X) (", ncol(X), ")")
+    }
+    if (any(!is.finite(weights)) || any(weights <= 0)) {
+      stop("weights must be positive and finite")
+    }
+  }
+  if (!is.null(E_space) && any(E_space < 0)) {
+    stop("E_space must be nonnegative")
+  }
+  if (eta_pi_0 < 0 || eta_pi_0 > 1) {
+    stop("eta_pi_0 must be in [0, 1]")
+  }
+  if (prob_add <= 0 || prob_delete <= 0 || prob_add + prob_delete > 1) {
+    stop("prob_add and prob_delete must be positive and sum to at most 1")
+  }
+  if (burn_in >= iter) {
+    stop("burn_in must be smaller than iter")
+  }
+
+  X_std <- standardize_X(X)
+  X <- X_std$X
+
   # --------------------------------------------------------------------------
   # Build the eta grid and the normalized weight matrix u_mat
   # theta_j = s * u_j, where u_j = w_j^eta / mean(w^eta)
@@ -310,21 +357,6 @@ lsp_random_ss_gibbs_sampler <- function(
     ]] <- 1
   }
 
-  # Initialize beta via ridge regression on the selected covariates
-  fit <- glmnet::glmnet(
-    X[, which(gam_current == 1)],
-    y,
-    alpha = 0,
-    lambda = 1
-  )
-  beta_current <- as.vector(coef(fit))
-
-  # Initialize inverse noise variance from current residual variance
-  invsigma_2_current <- 1 /
-    (1 /
-      n *
-      sum((y - cbind(1, X[, which(gam_current == 1)]) %*% beta_current)^2))
-
   eta_idx_current <- if (K > 1) sample(K, 1) else 1
 
   # --------------------------------------------------------------------------
@@ -382,7 +414,7 @@ lsp_random_ss_gibbs_sampler <- function(
 
     # --- Metropolis step for gamma ---
 
-    logacc <- lsp_random_ss_log_acceptance_rate(
+    logacc <- lsp_random_ss_log_posterior_ratio(
       Z_old,
       Z_old_gram,
       Z_new,
@@ -412,29 +444,35 @@ lsp_random_ss_gibbs_sampler <- function(
       acc <- 0
     }
 
-    # --- Gibbs draw for beta | gamma, sigma^2 ---
+    # --- Joint draw of (sigma^2, alpha, beta_gamma) | gamma, y ---
+    # sigma^{-2} is drawn with (alpha, beta_gamma) integrated out, then
+    # (alpha, beta_gamma) is drawn given sigma^2. This is an exact draw from
+    # p(sigma^2, alpha, beta_gamma | gamma, y), so the sweep leaves the joint
+    # posterior invariant after the gamma update.
 
-    chol_mat <- chol(
-      invsigma_2_current *
-        Z_gram_active +
-        (invsigma_2_current / tau) * diag(ncol(Z_gram_active))
-    )
-    invQ <- chol2inv(chol_mat)
-    l <- invsigma_2_current * crossprod(Z_active, y)
-    beta_gamma <- MASS::mvrnorm(1, invQ %*% l, invQ)
+    n_coef <- ncol(Z_active)
+    prior_prec <- diag(c(0, rep(1 / tau, n_coef - 1)), nrow = n_coef)
+    chol_Q <- chol(Z_gram_active + prior_prec)
+    Zty <- crossprod(Z_active, y)
+    coef_mean <- backsolve(chol_Q, forwardsolve(t(chol_Q), Zty)) # Q^{-1} Z'y
+    rss_marginal <- sum(y^2) - sum(Zty * coef_mean)
 
-    beta_current <- numeric(p + 1)
-    beta_current[c(1, active_idx + 1)] <- beta_gamma
-
-    # --- Gibbs draw for sigma^{-2} | gamma, beta ---
+    # --- Gibbs draw for sigma^{-2} | gamma, y ---
 
     invsigma_2_current <- rgamma(
       1,
-      shape = (n + length(beta_gamma)) / 2 + a_sigma,
-      rate = 0.5 *
-        (sum((y - Z_active %*% beta_gamma)^2) + sum(beta_gamma^2) / tau) +
-        b_sigma
+      shape = (n - 1) / 2 + a_sigma,
+      rate = b_sigma + rss_marginal / 2
     )
+
+    # --- Gibbs draw for (alpha, beta_gamma) | sigma^2, gamma, y ---
+
+    beta_gamma <- as.vector(
+      coef_mean + backsolve(chol_Q, rnorm(n_coef)) / sqrt(invsigma_2_current)
+    )
+
+    beta_current <- numeric(p + 1)
+    beta_current[c(1, active_idx + 1)] <- beta_gamma
 
     # --- Metropolis-Hastings step for s | gamma, eta ---
     # Proposal: random walk on the logit scale to respect the (0, 1) support.
@@ -474,13 +512,16 @@ lsp_random_ss_gibbs_sampler <- function(
 
     # --- Gibbs draw for eta (discrete) | gamma, s ---
     # Unnormalized log-probabilities across the eta grid. The prior is
-    # zero-inflated: P(eta = 0) = 1/2, with the remaining mass split evenly
-    # over the other K - 1 grid values
+    # zero-inflated: P(eta = 0) = eta_pi_0, with the remaining mass split
+    # evenly over the other K - 1 grid values
 
     W <- numeric(K)
     for (k in 1:K) {
       W[k] <- compute_log_prior_gamma(gam_current, s_current, u_mat[k, ])
-      if (k != 1) W[k] <- W[k] - log(K - 1)
+      if (K > 1) {
+        W[k] <- W[k] +
+          if (k == 1) log(eta_pi_0) else log(1 - eta_pi_0) - log(K - 1)
+      }
     }
     pi_eta <- exp(W - max(W)) / sum(exp(W - max(W))) # log-sum-exp stabilization
     eta_idx_current <- sample(K, 1, prob = pi_eta)
@@ -509,6 +550,13 @@ lsp_random_ss_gibbs_sampler <- function(
         p_eta_0_mean <- p_eta_0_mean + pi_eta[1] / n_keep
       }
     }
+  }
+
+  # Map coefficients back to the original scale of X
+  if (return_samples) {
+    beta_store <- unstandardize_beta(beta_store, X_std$center, X_std$scale)
+  } else {
+    beta_mean <- unstandardize_beta(beta_mean, X_std$center, X_std$scale)
   }
 
   if (return_samples) {
