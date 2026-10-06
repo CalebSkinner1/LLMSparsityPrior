@@ -15,8 +15,11 @@
 # ------------------------------------------------------------------------------
 
 suppressPackageStartupMessages({
-  library("tidyverse")
-  library("tidymodels")
+  library("dplyr")
+  library("purrr")
+  library("tibble")
+  library("readr")
+  library("rsample")
   library("furrr")
   library("future")
 })
@@ -27,6 +30,32 @@ source("LSP_SS/LSP_SSR_fixed_s.R")
 source("LSP_SS/LSP_SSR_random_s.R")
 source("LSP_SSL/LSP_SSLR.R")
 
+
+# Process Weights --------------------------------------------------------
+
+# Retain and order weights to match the columns of a given subgroup dataset
+subset_weights <- function(aki_weights_0, aki_data_set, eps = 1e-8) {
+  is_prob <- max(aki_weights_0$importance, na.rm = TRUE) <= 1
+
+  out <- aki_weights_0 |>
+    select(value, importance) |>
+    filter(value %in% colnames(aki_data_set)) |>
+    mutate(value = factor(value, levels = colnames(aki_data_set))) |>
+    arrange(value)
+
+  if (anyNA(out$importance)) {
+    stop(
+      "subset_weights: missing importance for ",
+      paste(out$value[is.na(out$importance)], collapse = ", ")
+    )
+  }
+
+  if (is_prob) {
+    out <- mutate(out, importance = pmin(pmax(importance, eps), 1 - eps))
+  }
+
+  out
+}
 
 # ------------------------------------------------------------------------------
 # LLM-Lasso
@@ -593,6 +622,76 @@ oos_coverage <- function(coverage, level = 0.95) {
     mutate(nominal = level, .after = method)
 }
 
+ss_predictive_summary <- function(
+  samples,
+  X_test_scaled,
+  y_test_scaled,
+  y_scale_factor,
+  set_tau,
+  method,
+  level = 0.95
+) {
+  beta <- samples$beta
+  p1 <- ncol(X_test_scaled) + 1L
+
+  is_draws <- is.matrix(beta) && nrow(beta) > 1L && ncol(beta) == p1
+
+  beta_hat <- if (is_draws) as.numeric(colMeans(beta)) else as.numeric(beta)
+
+  if (length(beta_hat) != p1) {
+    stop(
+      "ss_predictive_summary: beta has length ",
+      length(beta_hat),
+      " but X_test implies ",
+      p1,
+      " (method ",
+      method,
+      ")"
+    )
+  }
+
+  # can prediction intervals be formed?
+  invsigma_2 <- samples$invsigma_2
+  n_test <- nrow(X_test_scaled)
+  y <- as.numeric(y_test_scaled)
+
+  can_interval <- is_draws &&
+    !is.null(invsigma_2) &&
+    length(invsigma_2) == nrow(beta) &&
+    all(is.finite(invsigma_2)) &&
+    all(invsigma_2 > 0) &&
+    length(y) == n_test &&
+    n_test > 0L
+
+  if (!can_interval) {
+    return(list(beta_hat = beta_hat, coverage = tibble()))
+  }
+
+  n_draws <- nrow(beta)
+  sigma_draws <- sqrt(1 / invsigma_2)
+
+  # rnorm fills column-major, so recycling sigma_draws (length n_draws) gives
+  # each draw its own residual sd within every test column.
+  pred_mat <- tcrossprod(beta, cbind(1, X_test_scaled)) +
+    matrix(
+      rnorm(n_draws * n_test, mean = 0, sd = sigma_draws),
+      nrow = n_draws,
+      ncol = n_test
+    )
+
+  probs <- c((1 - level) / 2, 1 - (1 - level) / 2)
+  pred_int <- apply(pred_mat, 2, quantile, probs = probs, names = FALSE)
+
+  list(
+    beta_hat = beta_hat,
+    coverage = tibble(
+      coverage = y >= pred_int[1, ] & y <= pred_int[2, ],
+      width = (pred_int[2, ] - pred_int[1, ]) * y_scale_factor,
+      method = method
+    )
+  )
+}
+
 # ------------------------------------------------------------------------------
 # train_and_evaluate_baselines
 #
@@ -619,7 +718,10 @@ train_and_evaluate_baselines <- function(
   set_tau = 2,
   set_sparsity = 0.05,
   set_burn_in = 25000,
-  set_iter = 125000
+  set_iter = 125000,
+  set_thin = 1,
+  return_coverage = FALSE,
+  set_level = 0.95
 ) {
   X_train_scaled <- partition$X_train_scaled
   y_train_scaled <- partition$y_train_scaled
@@ -641,8 +743,9 @@ train_and_evaluate_baselines <- function(
       tau = set_tau,
       burn_in = set_burn_in,
       iter = set_iter,
+      thin = set_thin,
       init_weights = FALSE,
-      return_samples = FALSE
+      return_samples = return_coverage
     )
     ssl_fit <- lsp_ssl_map(
       X_train_scaled,
@@ -667,8 +770,9 @@ train_and_evaluate_baselines <- function(
       tau = set_tau,
       burn_in = set_burn_in,
       iter = set_iter,
+      thin = set_thin,
       init_weights = FALSE,
-      return_samples = FALSE
+      return_samples = return_coverage
     )
     ssl_fit <- lsp_ssl_map(
       X_train_scaled,
@@ -680,6 +784,16 @@ train_and_evaluate_baselines <- function(
     ) |>
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
   }
+
+  ss_summary <- ss_predictive_summary(
+    ss_samples,
+    X_test_scaled,
+    y_test_scaled,
+    y_scale_factor,
+    set_tau = set_tau,
+    method = "ss",
+    level = set_level
+  )
 
   lasso_results <- glmnet::glmnet(
     x = X_train_scaled,
@@ -707,7 +821,7 @@ train_and_evaluate_baselines <- function(
       y = (y_test_scaled * y_scale_factor + y_loc_factor)[, 1],
       ss_squared_error = squared_error(
         y_test_scaled,
-        cbind(1, X_test_scaled) %*% ss_samples$beta
+        cbind(1, X_test_scaled) %*% ss_summary$beta_hat
       )[, 1] *
         y_scale_factor^2,
       lasso_squared_error = squared_error(
@@ -730,7 +844,7 @@ train_and_evaluate_baselines <- function(
     mse <- tibble()
   }
 
-  list(mse = mse)
+  list(mse = mse, coverage = ss_summary$coverage)
 }
 
 # ------------------------------------------------------------------------------
@@ -760,7 +874,8 @@ train_and_evaluate_fixed_eta <- function(
   set_eta = 1,
   set_sparsity = 0.05,
   set_burn_in = 25000,
-  set_iter = 125000
+  set_iter = 125000,
+  set_thin = 1
 ) {
   X_train_scaled <- partition$X_train_scaled
   y_train_scaled <- partition$y_train_scaled
@@ -793,6 +908,7 @@ train_and_evaluate_fixed_eta <- function(
       tau = set_tau,
       burn_in = set_burn_in,
       iter = set_iter,
+      thin = set_thin,
       return_samples = FALSE
     )
     lsp_ssl_fit <- lsp_ssl_map(
@@ -819,6 +935,7 @@ train_and_evaluate_fixed_eta <- function(
       tau = set_tau,
       burn_in = set_burn_in,
       iter = set_iter,
+      thin = set_thin,
       return_samples = FALSE
     )
     lsp_ssl_fit <- lsp_ssl_map(
@@ -885,7 +1002,10 @@ train_and_evaluate_random_eta <- function(
   set_eta_range = 1,
   set_sparsity = 0.05,
   set_burn_in = 25000,
-  set_iter = 125000
+  set_iter = 125000,
+  set_thin = 1,
+  return_coverage = FALSE,
+  set_level = 0.95
 ) {
   X_train_scaled <- partition$X_train_scaled
   y_train_scaled <- partition$y_train_scaled
@@ -917,7 +1037,8 @@ train_and_evaluate_random_eta <- function(
       tau = set_tau,
       burn_in = set_burn_in,
       iter = set_iter,
-      return_samples = FALSE
+      thin = set_thin,
+      return_samples = return_coverage
     )
     lsp_ssl_fit <- lsp_ssl_map(
       X_train_scaled,
@@ -943,7 +1064,8 @@ train_and_evaluate_random_eta <- function(
       tau = set_tau,
       burn_in = set_burn_in,
       iter = set_iter,
-      return_samples = FALSE
+      thin = set_thin,
+      return_samples = return_coverage
     )
     lsp_ssl_fit <- lsp_ssl_map(
       X_train_scaled,
@@ -956,12 +1078,22 @@ train_and_evaluate_random_eta <- function(
       select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
   }
 
+  lsp_ss_summary <- ss_predictive_summary(
+    lsp_ss_samples,
+    X_test_scaled,
+    y_test_scaled,
+    y_scale_factor,
+    set_tau = set_tau,
+    method = "lsp_ss",
+    level = set_level
+  )
+
   if (length(y_test_scaled) > 0) {
     mse <- tibble(
       y = (y_test_scaled * y_scale_factor + y_loc_factor)[, 1],
       lsp_ss_squared_error = squared_error(
         y_test_scaled,
-        cbind(1, X_test_scaled) %*% lsp_ss_samples$beta
+        cbind(1, X_test_scaled) %*% lsp_ss_summary$beta_hat
       )[, 1] *
         y_scale_factor^2,
       lsp_ssl_squared_error = squared_error(
@@ -979,7 +1111,7 @@ train_and_evaluate_random_eta <- function(
     mse <- tibble()
   }
 
-  list(mse = mse)
+  list(mse = mse, coverage = lsp_ss_summary$coverage)
 }
 
 # ------------------------------------------------------------------------------
@@ -993,7 +1125,10 @@ train_and_evaluate_probability_weights <- function(
   partition,
   set_tau = 1,
   set_burn_in = 25000,
-  set_iter = 125000
+  set_iter = 125000,
+  set_thin = 1,
+  return_coverage = FALSE,
+  set_level = 0.95
 ) {
   X_train_scaled <- partition$X_train_scaled
   y_train_scaled <- partition$y_train_scaled
@@ -1017,7 +1152,8 @@ train_and_evaluate_probability_weights <- function(
     tau = set_tau,
     burn_in = set_burn_in,
     iter = set_iter,
-    return_samples = FALSE
+    thin = set_thin,
+    return_samples = return_coverage
   )
 
   ssl_prob_fit <- lsp_ssl_map(
@@ -1031,12 +1167,22 @@ train_and_evaluate_probability_weights <- function(
   ) |>
     select_lambda0_bic(X = X_train_scaled, y = y_train_scaled)
 
+  ss_prob_summary <- ss_predictive_summary(
+    ss_prob_samples,
+    X_test_scaled,
+    y_test_scaled,
+    y_scale_factor,
+    set_tau = set_tau,
+    method = "ss_prob",
+    level = set_level
+  )
+
   if (length(y_test_scaled) > 0) {
     mse <- tibble(
       y = (y_test_scaled * y_scale_factor + y_loc_factor)[, 1],
       ss_prob_squared_error = squared_error(
         y_test_scaled,
-        cbind(1, X_test_scaled) %*% ss_prob_samples$beta
+        cbind(1, X_test_scaled) %*% ss_prob_summary$beta_hat
       )[, 1] *
         y_scale_factor^2,
       ssl_prob_squared_error = squared_error(
@@ -1049,7 +1195,7 @@ train_and_evaluate_probability_weights <- function(
     mse <- tibble()
   }
 
-  list(mse = mse)
+  list(mse = mse, coverage = ss_prob_summary$coverage)
 }
 
 # ------------------------------------------------------------------------------
@@ -1285,7 +1431,10 @@ train_and_evaluate_spike_and_slab <- function(
   set_eta_range = NULL,
   set_sparsity = 0.05,
   set_burn_in = 25000,
-  set_iter = 125000
+  set_iter = 125000,
+  set_thin = 1,
+  return_coverage = FALSE,
+  set_level = 0.95
 ) {
   X_train_scaled <- partition$X_train_scaled
   y_train_scaled <- partition$y_train_scaled
@@ -1309,8 +1458,9 @@ train_and_evaluate_spike_and_slab <- function(
       tau = set_tau,
       burn_in = set_burn_in,
       iter = set_iter,
+      thin = set_thin,
       init_weights = FALSE,
-      return_samples = FALSE
+      return_samples = return_coverage
     )
     lsp_ss_samples <- lsp_fixed_ss_gibbs_sampler(
       X_train_scaled,
@@ -1323,7 +1473,8 @@ train_and_evaluate_spike_and_slab <- function(
       tau = set_tau,
       burn_in = set_burn_in,
       iter = set_iter,
-      return_samples = FALSE
+      thin = set_thin,
+      return_samples = return_coverage
     )
   } else if (random_s) {
     ss_samples <- lsp_random_ss_gibbs_sampler(
@@ -1338,8 +1489,9 @@ train_and_evaluate_spike_and_slab <- function(
       tau = set_tau,
       burn_in = set_burn_in,
       iter = set_iter,
+      thin = set_thin,
       init_weights = FALSE,
-      return_samples = TRUE
+      return_samples = return_coverage
     )
     lsp_ss_samples <- lsp_random_ss_gibbs_sampler(
       X_train_scaled,
@@ -1354,60 +1506,10 @@ train_and_evaluate_spike_and_slab <- function(
       tau = set_tau,
       burn_in = set_burn_in,
       iter = set_iter,
-      return_samples = TRUE
-    )
-
-    lsp_pred_mat <- lsp_ss_samples$beta %*%
-      t(cbind(1, X_test_scaled)) +
-      matrix(
-        rnorm(
-          n = (set_iter - set_burn_in) * length(y_test_scaled),
-          mean = 0,
-          sd = sqrt(set_tau / lsp_ss_samples$invsigma_2)
-        ),
-        nrow = (set_iter - set_burn_in),
-        ncol = length(y_test_scaled),
-        byrow = FALSE
-      )
-
-    lsp_int <- apply(lsp_pred_mat, 2, quantile, probs = c(0.025, 0.975))
-
-    lsp_coverage <- between(
-      y_test_scaled[, 1],
-      left = lsp_int[1, ],
-      right = lsp_int[2, ]
-    )
-
-    lsp_width <- (lsp_int[2, ] - lsp_int[1, ]) * y_scale_factor
-
-    ss_pred_mat <- ss_samples$beta %*%
-      t(cbind(1, X_test_scaled)) +
-      matrix(
-        rnorm(
-          n = (set_iter - set_burn_in) * length(y_test_scaled),
-          mean = 0,
-          sd = sqrt(set_tau / ss_samples$invsigma_2)
-        ),
-        nrow = (set_iter - set_burn_in),
-        ncol = length(y_test_scaled),
-        byrow = FALSE
-      )
-
-    ss_int <- apply(ss_pred_mat, 2, quantile, probs = c(0.025, 0.975))
-
-    ss_width <- ss_int[2, ] - ss_int[1, ]
-
-    ss_coverage <- between(
-      y_test_scaled,
-      left = ss_int[1, ],
-      right = ss_int[2, ]
+      thin = set_thin,
+      return_samples = return_coverage
     )
   }
-
-  coverage <- bind_rows(
-    tibble("coverage" = lsp_coverage, "width" = lsp_width, method = "lsp"),
-    tibble("coverage" = ss_coverage, "width" = ss_width, method = "ss")
-  )
 
   # Probability-weight SS: importance weights used directly as sparsity
   ss_prob_samples <- lsp_fixed_ss_gibbs_sampler(
@@ -1421,7 +1523,38 @@ train_and_evaluate_spike_and_slab <- function(
     tau = set_tau,
     burn_in = set_burn_in,
     iter = set_iter,
-    return_samples = FALSE
+    thin = set_thin,
+    return_samples = return_coverage
+  )
+
+  ss_summary <- ss_predictive_summary(
+    ss_samples,
+    X_test_scaled,
+    y_test_scaled,
+    y_scale_factor,
+    set_tau = set_tau,
+    method = "ss",
+    level = set_level
+  )
+
+  lsp_ss_summary <- ss_predictive_summary(
+    lsp_ss_samples,
+    X_test_scaled,
+    y_test_scaled,
+    y_scale_factor,
+    set_tau = set_tau,
+    method = "lsp_ss",
+    level = set_level
+  )
+
+  ss_prob_summary <- ss_predictive_summary(
+    ss_prob_samples,
+    X_test_scaled,
+    y_test_scaled,
+    y_scale_factor,
+    set_tau = set_tau,
+    method = "ss_prob",
+    level = set_level
   )
 
   if (length(y_test_scaled) > 0) {
@@ -1429,17 +1562,17 @@ train_and_evaluate_spike_and_slab <- function(
       y = (y_test_scaled * y_scale_factor + y_loc_factor)[, 1],
       ss_squared_error = squared_error(
         y_test_scaled,
-        cbind(1, X_test_scaled) %*% ss_samples$beta
+        cbind(1, X_test_scaled) %*% ss_summary$beta_hat
       )[, 1] *
         y_scale_factor^2,
       lsp_ss_squared_error = squared_error(
         y_test_scaled,
-        cbind(1, X_test_scaled) %*% lsp_ss_samples$beta
+        cbind(1, X_test_scaled) %*% lsp_ss_summary$beta_hat
       )[, 1] *
         y_scale_factor^2,
       ss_prob_squared_error = squared_error(
         y_test_scaled,
-        cbind(1, X_test_scaled) %*% ss_prob_samples$beta
+        cbind(1, X_test_scaled) %*% ss_prob_summary$beta_hat
       )[, 1] *
         y_scale_factor^2
     )
@@ -1447,5 +1580,12 @@ train_and_evaluate_spike_and_slab <- function(
     mse <- tibble()
   }
 
-  list(mse = mse, coverage = coverage)
+  list(
+    mse = mse,
+    coverage = bind_rows(
+      ss_summary$coverage,
+      lsp_ss_summary$coverage,
+      ss_prob_summary$coverage
+    )
+  )
 }

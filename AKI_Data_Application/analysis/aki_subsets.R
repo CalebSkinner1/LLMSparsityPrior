@@ -49,35 +49,62 @@ aki_data5 <- aki_data_0 |>
 # subgroup dataset after topK_features filtering.
 # ------------------------------------------------------------------------------
 
-aki_weights_0 <- read_csv(
+aki_weights_1 <- read_csv(
   "AKI_Data_Application/weights/aki_weights_original_1.csv",
   show_col_types = FALSE
 )
-aki_weights_probabilities <- read_csv(
+aki_weights_probabilities_1 <- read_csv(
   "AKI_Data_Application/weights/aki_weights_probabilities_1.csv",
   show_col_types = FALSE
 )
 
-# Retain and order weights to match the columns of a given subgroup dataset
-subset_weights <- function(aki_weights_0, aki_data_set) {
-  aki_weights_0 |>
-    select(value, importance) |>
-    filter(value %in% colnames(aki_data_set)) |>
-    mutate(value = factor(value, levels = colnames(aki_data_set))) |>
-    arrange(value)
-}
+aki_weights_2 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_original_female_smoker.csv",
+  show_col_types = FALSE
+)
+aki_weights_probabilities_2 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_probabilities_female_smoker.csv",
+  show_col_types = FALSE
+)
 
-aki_weights1 <- subset_weights(aki_weights_0, aki_data1)
-aki_weights2 <- subset_weights(aki_weights_0, aki_data2)
-aki_weights3 <- subset_weights(aki_weights_0, aki_data3)
-aki_weights4 <- subset_weights(aki_weights_0, aki_data4)
-aki_weights5 <- subset_weights(aki_weights_0, aki_data5)
+aki_weights_3 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_original_black_men.csv",
+  show_col_types = FALSE
+)
+aki_weights_probabilities_3 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_probabilities_black_men.csv",
+  show_col_types = FALSE
+)
 
-aki_prob_weights1 <- subset_weights(aki_weights_probabilities, aki_data1)
-aki_prob_weights2 <- subset_weights(aki_weights_probabilities, aki_data2)
-aki_prob_weights3 <- subset_weights(aki_weights_probabilities, aki_data3)
-aki_prob_weights4 <- subset_weights(aki_weights_probabilities, aki_data4)
-aki_prob_weights5 <- subset_weights(aki_weights_probabilities, aki_data5)
+aki_weights_4 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_original_liver_disease.csv",
+  show_col_types = FALSE
+)
+aki_weights_probabilities_4 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_probabilities_liver_disease.csv",
+  show_col_types = FALSE
+)
+
+aki_weights_5 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_original_immunocompromised.csv",
+  show_col_types = FALSE
+)
+aki_weights_probabilities_5 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_probabilities_immunocompromised.csv",
+  show_col_types = FALSE
+)
+
+aki_weights1 <- subset_weights(aki_weights_1, aki_data1)
+aki_weights2 <- subset_weights(aki_weights_2, aki_data2)
+aki_weights3 <- subset_weights(aki_weights_3, aki_data3)
+aki_weights4 <- subset_weights(aki_weights_4, aki_data4)
+aki_weights5 <- subset_weights(aki_weights_5, aki_data5)
+
+aki_prob_weights1 <- subset_weights(aki_weights_probabilities_1, aki_data1)
+aki_prob_weights2 <- subset_weights(aki_weights_probabilities_2, aki_data2)
+aki_prob_weights3 <- subset_weights(aki_weights_probabilities_3, aki_data3)
+aki_prob_weights4 <- subset_weights(aki_weights_probabilities_4, aki_data4)
+aki_prob_weights5 <- subset_weights(aki_weights_probabilities_5, aki_data5)
 
 # Named lists pairing each subgroup with its respective weight sets
 data_weights_list <- list(
@@ -109,6 +136,7 @@ sparsity <- 0.01
 eta_range <- NULL # NULL triggers default prior
 iter <- 60000
 burn_in <- 10000
+thin <- 5
 random_s <- TRUE
 fixed_s <- FALSE
 
@@ -117,7 +145,7 @@ fixed_s <- FALSE
 # ------------------------------------------------------------------------------
 
 total_cores <- parallel::detectCores(logical = FALSE)
-cores <- min(total_cores, 4)
+cores <- min(total_cores, 12)
 plan(multicore, workers = cores)
 options(future.globals.maxSize = 2000 * 1024^2)
 
@@ -178,7 +206,9 @@ for (j in seq_along(data_weights_list)) {
         set_eta_range = eta_range,
         set_sparsity = sparsity,
         set_burn_in = burn_in,
-        set_iter = iter
+        set_iter = iter,
+        set_thin = thin,
+        return_coverage = TRUE
       )
     },
     .options = furrr_options(seed = TRUE)
@@ -186,7 +216,26 @@ for (j in seq_along(data_weights_list)) {
     transpose()
 
   ss_mse <- ss_results$mse |> bind_rows()
-  ss_coverage <- ss_results$coverage |> bind_rows(.id = "partition")
+  ss_coverage <- ss_results$coverage |>
+    bind_rows(.id = "partition") |>
+    mutate(
+      partition = as.integer(partition),
+      rep = (partition - 1L) %/% folds + 1L,
+      fold = (partition - 1L) %% folds + 1L
+    )
+
+  # per-replication coverage
+  ss_coverage |>
+    group_by(method, rep) |>
+    summarize(
+      n_intervals = n(),
+      coverage = mean(coverage),
+      mean_width = mean(width),
+      median_width = median(width),
+      .groups = "drop"
+    ) |>
+    mutate(dataset = j, tau = tau, nominal = 0.95, .before = 1) |>
+    write_csv(paste0("dataset", j, "coverage_by_rep.csv"))
 
   bind_cols(
     non_ss_results$mse,
@@ -194,10 +243,6 @@ for (j in seq_along(data_weights_list)) {
   ) |>
     mutate(tau = tau) |>
     write_csv(paste0("dataset", j, "results.csv"))
-
-  coverage_summary <- oos_coverage(ss_coverage, level = 0.95) |>
-    mutate(dataset = j, tau = tau, .before = 1)
-  coverage_summary |> write_csv(paste0("dataset", j, "coverage.csv"))
 
   message("Completed dataset ", j)
 }

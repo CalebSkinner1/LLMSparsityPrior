@@ -49,35 +49,62 @@ aki_data5 <- aki_data_0 |>
 # subgroup dataset after topK_features filtering.
 # ------------------------------------------------------------------------------
 
-aki_weights_0 <- read_csv(
+aki_weights_1 <- read_csv(
   "AKI_Data_Application/weights/aki_weights_original_1.csv",
   show_col_types = FALSE
 )
-aki_weights_probabilities <- read_csv(
+aki_weights_probabilities_1 <- read_csv(
   "AKI_Data_Application/weights/aki_weights_probabilities_1.csv",
   show_col_types = FALSE
 )
 
-# Retain and order weights to match the columns of a given subgroup dataset
-subset_weights <- function(aki_weights_0, aki_data_set) {
-  aki_weights_0 |>
-    select(value, importance) |>
-    filter(value %in% colnames(aki_data_set)) |>
-    mutate(value = factor(value, levels = colnames(aki_data_set))) |>
-    arrange(value)
-}
+aki_weights_2 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_original_female_smoker.csv",
+  show_col_types = FALSE
+)
+aki_weights_probabilities_2 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_probabilities_female_smoker.csv",
+  show_col_types = FALSE
+)
 
-aki_weights1 <- subset_weights(aki_weights_0, aki_data1)
-aki_weights2 <- subset_weights(aki_weights_0, aki_data2)
-aki_weights3 <- subset_weights(aki_weights_0, aki_data3)
-aki_weights4 <- subset_weights(aki_weights_0, aki_data4)
-aki_weights5 <- subset_weights(aki_weights_0, aki_data5)
+aki_weights_3 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_original_black_men.csv",
+  show_col_types = FALSE
+)
+aki_weights_probabilities_3 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_probabilities_black_men.csv",
+  show_col_types = FALSE
+)
 
-aki_prob_weights1 <- subset_weights(aki_weights_probabilities, aki_data1)
-aki_prob_weights2 <- subset_weights(aki_weights_probabilities, aki_data2)
-aki_prob_weights3 <- subset_weights(aki_weights_probabilities, aki_data3)
-aki_prob_weights4 <- subset_weights(aki_weights_probabilities, aki_data4)
-aki_prob_weights5 <- subset_weights(aki_weights_probabilities, aki_data5)
+aki_weights_4 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_original_liver_disease.csv",
+  show_col_types = FALSE
+)
+aki_weights_probabilities_4 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_probabilities_liver_disease.csv",
+  show_col_types = FALSE
+)
+
+aki_weights_5 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_original_immunocompromised.csv",
+  show_col_types = FALSE
+)
+aki_weights_probabilities_5 <- read_csv(
+  "AKI_Data_Application/weights/aki_weights_probabilities_immunocompromised.csv",
+  show_col_types = FALSE
+)
+
+aki_weights1 <- subset_weights(aki_weights_1, aki_data1)
+aki_weights2 <- subset_weights(aki_weights_2, aki_data2)
+aki_weights3 <- subset_weights(aki_weights_3, aki_data3)
+aki_weights4 <- subset_weights(aki_weights_4, aki_data4)
+aki_weights5 <- subset_weights(aki_weights_5, aki_data5)
+
+aki_prob_weights1 <- subset_weights(aki_weights_probabilities_1, aki_data1)
+aki_prob_weights2 <- subset_weights(aki_weights_probabilities_2, aki_data2)
+aki_prob_weights3 <- subset_weights(aki_weights_probabilities_3, aki_data3)
+aki_prob_weights4 <- subset_weights(aki_weights_probabilities_4, aki_data4)
+aki_prob_weights5 <- subset_weights(aki_weights_probabilities_5, aki_data5)
 
 # Named lists pairing each subgroup with its respective weight sets
 data_weights_list <- list(
@@ -102,7 +129,7 @@ data_weights_probability_list <- list(
 
 outcome <- "creatinine_ratio"
 
-tau <- 2
+tau <- 0.5
 eta_range <- NULL # NULL triggers default prior
 iter <- 125000
 burn_in <- 25000
@@ -113,31 +140,10 @@ n_top_models <- 5
 credible_level <- 0.95
 
 # ------------------------------------------------------------------------------
-# Estimate phi hat
-# ------------------------------------------------------------------------------
-
-message("estimating phi hat...")
-
-phi_estimates <- map2(
-  list(aki_data1, aki_data2, aki_data3, aki_data4, aki_data5),
-  list(aki_weights1, aki_weights2, aki_weights3, aki_weights4, aki_weights5),
-  ~ estimate_phi(
-    data = .x,
-    outcome_var = outcome,
-    weights = .y,
-    model = "SSL",
-    set_tau = tau,
-    iter = iter,
-    burn_in = burn_in
-  )
-)
-
-phi_estimates
-
-# ------------------------------------------------------------------------------
 # Run full models
 # ------------------------------------------------------------------------------
 
+set.seed(1234)
 focus_data <- aki_data1
 focus_weights <- aki_weights1
 message("fitting full models on subgroup: 1")
@@ -179,15 +185,16 @@ n_draws <- iter - burn_in
 # ------------------------------------------------------------------------------
 
 eta_summary <- tibble(
-  mean = mean(lsp_run$eta),
-  median = median(lsp_run$eta),
-  q10 = quantile(lsp_run$eta, 0.10),
-  q90 = quantile(lsp_run$eta, 0.90)
+  mean = mean(lsp_full$eta),
+  median = median(lsp_full$eta),
+  q10 = quantile(lsp_full$eta, 0.10),
+  q90 = quantile(lsp_full$eta, 0.90),
+  eta_0 = mean(lsp_full$p_eta_0)
 )
 
 eta_summary
 
-eta_plot <- tibble(eta = lsp_run$eta) |>
+eta_plot <- tibble(eta = lsp_full$eta) |>
   ggplot(aes(x = eta)) +
   geom_histogram(bins = 30) +
   labs(x = expression(eta), y = "Posterior draws") +
@@ -196,7 +203,7 @@ eta_plot <- tibble(eta = lsp_run$eta) |>
 eta_plot
 
 # Draws where the implied maximum inclusion probability exceeds 1
-theta_max_draws <- tibble(eta = lsp_run$eta, s = lsp_run$s) |>
+theta_max_draws <- tibble(eta = lsp_full$eta, s = lsp_full$s) |>
   mutate(
     theta_max = s * map_dbl(eta, \(e) max(importance)^e / mean(importance^e))
   ) |>
@@ -227,7 +234,7 @@ top_models <- function(gamma, feature_names, n_top = 5) {
     slice_head(n = n_top)
 }
 
-final_ranking <- top_models(lsp_run$gamma, feature_names, n_top = n_top_models)
+final_ranking <- top_models(lsp_full$gamma, feature_names, n_top = n_top_models)
 
 final_ranking
 
@@ -237,25 +244,30 @@ final_ranking
 
 mip <- tibble(
   feature = feature_names,
-  lsp_mip = colMeans(lsp_run$gamma),
-  ss_mip = colMeans(ss_run$gamma),
+  lsp_mip = colMeans(lsp_full$gamma),
+  ss_mip = colMeans(ss_full$gamma),
   weight = importance
 ) |>
   arrange(desc(lsp_mip))
+
+mip
 
 mip |>
   arrange(desc(ss_mip))
 
 
-# predictive intervals
+# ------------------------------------------------------------------------------
+# Predictive Intervals
+# ------------------------------------------------------------------------------
 
-pred_mat <- lsp_run$beta %*%
+# in practice, this is applied on a held-out set
+pred_mat <- lsp_full$beta %*%
   t(cbind(1, scaled_data$X_train_scaled)) +
   matrix(
     rnorm(
       n = (iter - burn_in) * length(scaled_data$y_train_scaled),
       mean = 0,
-      sd = sqrt(tau / run$invsigma_2)
+      sd = sqrt(tau / lsp_full$invsigma_2)
     ),
     nrow = (iter - burn_in),
     ncol = length(scaled_data$y_train_scaled),
