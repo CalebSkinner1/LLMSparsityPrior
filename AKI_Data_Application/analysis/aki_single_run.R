@@ -1,7 +1,13 @@
 # AKI Data Application - Single Run
 #
-# Applies all LSP to five clinical subgroups derived from the AKI dataset.
-# Does not perform repeated cross validation; trains on entire dataset
+# Fits LSP (SS) and standard SS to one clinical subgroup of the AKI dataset.
+# Choose the subgroup with the `subgroup` setting below (1 = age > 80,
+# 2 = female current smokers, 3 = Black men, 4 = liver disease,
+# 5 = immunocompromised). Does not perform repeated cross validation; trains
+# on the entire subgroup.
+
+# Subgroup to analyze (1-5)
+subgroup <- 1
 
 message("loading functions...")
 source("AKI_Data_Application/analysis/aki_analysis_support.R")
@@ -40,10 +46,10 @@ aki_data5 <- aki_data_0 |>
 # ------------------------------------------------------------------------------
 # Load and Align Weights
 #
-# Two weight sets are used:
-#   aki_weights_0             — discretized LLM importance weights (for LSP-SS/SSL)
-#   aki_weights_probabilities — probability importance weights (used as direct
-#                            prior inclusion probabilities)
+# Two weight sets are used for each subgroup:
+#   - discretized LLM importance weights (for LSP-SS/SSL)
+#   - probability importance weights (used as direct prior inclusion
+#     probabilities)
 #
 # subset_weights aligns the weight data frame to the columns present in each
 # subgroup dataset after topK_features filtering.
@@ -144,10 +150,9 @@ credible_level <- 0.95
 # ------------------------------------------------------------------------------
 
 set.seed(1234)
-focus_data <- aki_data1
-focus_weights <- aki_weights1
-message("fitting full models on subgroup: 1")
-# may adjust to aki_data2, etc.
+focus_data <- data_weights_list[[subgroup]]$data
+focus_weights <- data_weights_list[[subgroup]]$weights
+message("fitting full models on subgroup: ", subgroup)
 
 scaled_data <- train_test_split(
   focus_data,
@@ -177,8 +182,6 @@ ss_full <- lsp_random_ss_gibbs_sampler(
   iter = iter,
   burn_in = burn_in
 )
-
-n_draws <- iter - burn_in
 
 # ------------------------------------------------------------------------------
 # Posterior of eta
@@ -261,20 +264,13 @@ mip |>
 # ------------------------------------------------------------------------------
 
 # in practice, this is applied on a held-out set
-pred_mat <- lsp_full$beta %*%
-  t(cbind(1, scaled_data$X_train_scaled)) +
-  matrix(
-    rnorm(
-      n = (iter - burn_in) * length(scaled_data$y_train_scaled),
-      mean = 0,
-      sd = sqrt(tau / lsp_full$invsigma_2)
-    ),
-    nrow = (iter - burn_in),
-    ncol = length(scaled_data$y_train_scaled),
-    byrow = FALSE
-  )
+lsp_predictive <- ss_predictive_summary(
+  lsp_full,
+  X_test_scaled = scaled_data$X_train_scaled,
+  y_test_scaled = scaled_data$y_train_scaled,
+  y_scale_factor = scaled_data$y_scale_factor,
+  method = "lsp_ss",
+  level = credible_level
+)
 
-int <- apply(pred_mat, 2, quantile, probs = c(0.025, 0.975))
-
-between(scaled_data$y_train_scaled, left = int[1, ], right = int[2, ]) |>
-  mean()
+mean(lsp_predictive$coverage$coverage)

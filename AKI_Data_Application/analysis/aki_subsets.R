@@ -40,10 +40,10 @@ aki_data5 <- aki_data_0 |>
 # ------------------------------------------------------------------------------
 # Load and Align Weights
 #
-# Two weight sets are used:
-#   aki_weights_0             — discretized LLM importance weights (for LSP-SS/SSL)
-#   aki_weights_probabilities — probability importance weights (used as direct
-#                            prior inclusion probabilities)
+# Two weight sets are used for each subgroup:
+#   - discretized LLM importance weights (for LSP-SS/SSL)
+#   - probability importance weights (used as direct prior inclusion
+#     probabilities)
 #
 # subset_weights aligns the weight data frame to the columns present in each
 # subgroup dataset after topK_features filtering.
@@ -166,15 +166,11 @@ for (j in seq_along(data_weights_list)) {
     outcome_var = outcome
   )
 
-  set.seed(123)
-  # partitions of the naive LLM inclusion probabilities
-  prob_partitions <- train_test_split(
-    data_weights_probability_list[[j]]$data,
-    data_weights_probability_list[[j]]$weights,
-    n_folds = folds,
-    repetitions = repetitions,
-    outcome_var = outcome
-  )
+  # Same partitions with the naive LLM inclusion probabilities swapped in
+  prob_partitions <- map(partitions, function(partition) {
+    partition$weights <- data_weights_probability_list[[j]]$weights
+    partition
+  })
 
   non_ss_results <- future_map(
     seq_along(partitions),

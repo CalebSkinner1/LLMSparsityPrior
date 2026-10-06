@@ -1,6 +1,6 @@
 # AKI Data Application — Low-Data Regime Analysis
 #
-# Fits baseline and LSP models on on each of five clinical subgroups across a
+# Fits baseline and LSP models on each of five clinical subgroups across a
 # range of training set sizes (n_range), using repeated stratified cross-validation.
 # LSP and naive weight variants are evaluated in parallel.
 # Results are written to one CSV per dataset, n combination
@@ -207,8 +207,8 @@ for (j in seq_along(data_weights_list)) {
     }
 
     message("  n = ", n)
-    # Partitions for LSP and naive weights use the same seed so
-    # that train/test splits are aligned when results are combined
+    # Partitions are built once; the naive weights are swapped in so that
+    # train/test splits are aligned when results are combined
     set.seed(123)
     partitions <- train_test_split(
       aki_data,
@@ -219,15 +219,10 @@ for (j in seq_along(data_weights_list)) {
       n = n
     )
 
-    set.seed(123)
-    prob_partitions <- train_test_split(
-      aki_data,
-      aki_prob_weights,
-      n_folds = folds,
-      repetitions = repetitions,
-      outcome_var = outcome,
-      n = n
-    )
+    prob_partitions <- map(partitions, function(partition) {
+      partition$weights <- aki_prob_weights
+      partition
+    })
 
     # Realized training size, for the record: equals n whenever subsampling
     # actually occurred in every fold.
