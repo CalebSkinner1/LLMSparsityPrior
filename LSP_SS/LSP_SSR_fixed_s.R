@@ -1,10 +1,10 @@
 # LLM Sparsity Prior (LSP) — Discrete Spike-and-Slab Regression
 #
 # Implements a Bayesian variable selection sampler where each covariate
-# has a unique prior inclusion probability (theta_j), optionally informed
-# by external LLM-derived weights. Supports a fixed or grid-searched
-# concentration parameter eta that governs how strongly the weights
-# influence the prior.
+# has its own prior inclusion probability (theta_j), informed
+# by external LLM-derived weights. The concentration parameter eta, which
+# governs how strongly the weights influence the prior, is either fixed or
+# sampled from a discrete grid.
 
 # ------------------------------------------------------------------------------
 # Log-Posterior (unnormalized, marginalizing over beta and sigma^2)
@@ -13,7 +13,7 @@
 #   Z        - Selected design matrix with intercept column prepended: cbind(1, X[, gamma == 1])
 #   Z_gram   - Precomputed crossprod(Z)
 #   y        - Response vector (length n)
-#   tau      - Slab variance for the g-prior
+#   tau      - Slab variance: beta_j ~ N(0, tau * sigma^2)
 #   gamma    - Binary inclusion vector (length p)
 #   a_sigma  - Shape hyperparameter for the inverse-gamma prior on sigma^2
 #   b_sigma  - Rate hyperparameter for the inverse-gamma prior on sigma^2
@@ -46,13 +46,20 @@ lsp_fixed_ss_log_posterior <- function(
   y_Z <- crossprod(Z, y)
   quadratic_term <- as.numeric(t(y_Z) %*% chol2inv(cholQ) %*% y_Z)
 
-  n_gam /
+  -n_gam /
     2 *
     log(tau) -
     .5 * log_detQ -
     (n / 2 + a_sigma) * log(.5 * (sum(y^2) - quadratic_term) + b_sigma) +
     model_prior
 }
+
+# ------------------------------------------------------------------------------
+# Draw one Element of x
+#
+# Safe replacement for sample(x)[1], which draws from 1:x when x is a single number >= 1.
+# ------------------------------------------------------------------------------
+pick_one <- function(x) x[sample.int(length(x), 1)]
 
 # ------------------------------------------------------------------------------
 # Metropolis Log-Acceptance Rate
@@ -104,7 +111,7 @@ lsp_fixed_ss_log_acceptance_rate <- function(
 # Runs a Metropolis-within-Gibbs sampler for Bayesian variable selection.
 # When weights are supplied, the prior inclusion probabilities are modulated
 # by an LLM-derived weight vector via a concentration parameter eta. Setting
-# E_space = 0 (no weights) recovers the standard spike-and-slab sampler.
+# weights = NULL or E_space = 0 recovers the standard spike-and-slab sampler.
 #
 # Arguments:
 #   X             - n x p design matrix (uncentered; intercept added internally)
@@ -116,7 +123,7 @@ lsp_fixed_ss_log_acceptance_rate <- function(
 #                   per-covariate inclusion probabilities
 #   a_sigma       - Shape hyperparameter for the inverse-gamma prior on sigma^2
 #   b_sigma       - Rate hyperparameter for the inverse-gamma prior on sigma^2
-#   tau           - Slab variance for the g-prior on regression coefficients
+#   tau           - Slab variance: beta_j ~ N(0, tau * sigma^2)
 #   iter          - Total number of MCMC iterations
 #   burn_in       - Number of initial iterations discarded as burn-in
 #   thin          - Thinning interval applied after burn-in
@@ -135,6 +142,7 @@ lsp_fixed_ss_log_acceptance_rate <- function(
 #     invsigma_2 - Posterior draws (or mean) of the inverse noise variance
 #     eta        - Posterior draws (or mean) of the concentration parameter
 #     accs       - Metropolis acceptance indicators (or mean acceptance rate)
+#     p_eta_0    - Full-conditional probability of eta = 0 at each draw
 # ------------------------------------------------------------------------------
 lsp_fixed_ss_gibbs_sampler <- function(
   X,
@@ -157,13 +165,13 @@ lsp_fixed_ss_gibbs_sampler <- function(
   # Build the eta grid and corresponding prior inclusion probability matrix
   # --------------------------------------------------------------------------
   if (is.null(weights)) {
-    # No weights supplied: fix eta = 0 (uniform inclusion probability)
+    # No weights supplied: fix eta = 0 (inclusion probabilities given by sparsity)
     E_space <- 0
   } else if (is.null(E_space)) {
-    # Search for the largest eta such that all theta_j remain below 1
+    # Search for the largest eta (up to 20) such that all theta_j remain below 1
     eta_max <- 0
     step_size <- 1
-    theta_bound <- sparsity * max(weights)^eta_max / mean(weights^eta_max)
+    theta_bound <- max(sparsity * max(weights)^eta_max) / mean(weights^eta_max)
 
     while (eta_max <= 20) {
       eta_max <- eta_max + step_size # step forward
@@ -181,15 +189,22 @@ lsp_fixed_ss_gibbs_sampler <- function(
         }
       }
     }
+    eta_max <- min(eta_max, 20)
     E_space <- seq(0, eta_max, length.out = 11)
     rm(eta_max)
+  } else {
+    # User-supplied grid: ensure eta = 0 is present and listed first, since
+    # the zero-inflated prior mass and p_eta_0 both attach to E_space[1]
+    E_space <- sort(unique(c(0, E_space)))
   }
 
   p <- ncol(X)
   n <- nrow(X)
   K <- length(E_space)
 
-  # Compute the p(gamma_j = 1) matrix: rows index eta, columns index covariates
+  stopifnot(all(sparsity > 0 & sparsity < 1))
+
+  # Prior inclusion probabilities: rows index eta, columns index covariates
   theta_mat <- matrix(0, nrow = K, ncol = p)
 
   if (length(E_space) == 1) {
@@ -206,7 +221,7 @@ lsp_fixed_ss_gibbs_sampler <- function(
         (weights^E_space) /
         mean(weights^E_space)
 
-      theta_mat[1, ] <- pmin(pmax(raw_theta, 1e-4), 1 - 1e-4)
+      theta_mat[1, ] <- pmin(pmax(raw_theta, 1e-8), 1 - 1e-8)
     }
   } else {
     for (k in 1:K) {
@@ -216,7 +231,7 @@ lsp_fixed_ss_gibbs_sampler <- function(
         (weights^eta_k) /
         mean((weights^eta_k))
 
-      capped_theta <- pmin(pmax(raw_theta, 1e-4), 1 - 1e-4)
+      capped_theta <- pmin(pmax(raw_theta, 1e-8), 1 - 1e-8)
 
       theta_mat[k, ] <- capped_theta
     }
@@ -226,7 +241,7 @@ lsp_fixed_ss_gibbs_sampler <- function(
   # Pre-allocate storage
   # --------------------------------------------------------------------------
 
-  n_keep <- ceiling((iter - burn_in) / thin)
+  n_keep <- floor((iter - burn_in) / thin)
 
   if (return_samples) {
     gam_store <- matrix(0, nrow = n_keep, ncol = p)
@@ -234,26 +249,28 @@ lsp_fixed_ss_gibbs_sampler <- function(
     invsigma_2_store <- rep(0, n_keep)
     acc_store <- rep(0, n_keep)
     eta_store <- rep(0, n_keep)
+    pi_eta0_store <- numeric(n_keep)
   } else {
     gam_mean <- rep(0, p)
     beta_mean <- rep(0, p + 1)
     invsigma_2_mean <- 0
     acc_mean <- 0
     eta_mean <- 0
+    p_eta_0_mean <- 0
   }
 
-  # generate initial values of gamma (in a smart way)
+  # Initialize gamma
   gam_current <- rep(0, p)
 
   if (init_weights) {
     # Initialize with the covariates receiving the highest LLM weights
     gam_current[order(weights, decreasing = TRUE)[
-      1:max(2, ceiling(sparsity * p))
+      1:max(2, ceiling(mean(sparsity) * p))
     ]] <- 1
   } else {
     # initialize with the covariates most correlated with y
     gam_current[order(abs(cor(X, y)), decreasing = TRUE)[
-      1:max(2, ceiling(sparsity * p))
+      1:max(2, ceiling(mean(sparsity) * p))
     ]] <- 1
   }
 
@@ -288,33 +305,36 @@ lsp_fixed_ss_gibbs_sampler <- function(
     Z_old_gram <- crossprod(Z_old)
 
     unif_gam <- runif(1)
-    if (length(selected_gam) == 0) {
-      unif_gam <- 0.5
-    } # force an add when model is empty
-
     log_prop_ratio <- 0
     current_model_size <- sum(gam_prop)
 
-    if (unif_gam < prob_delete || length(removed_gam) == 0) {
+    if (
+      length(removed_gam) == 0 ||
+        (length(selected_gam) > 0 && unif_gam < prob_delete)
+    ) {
       # Delete a randomly chosen active variable
-      chosen <- sample(selected_gam)[1]
+      chosen <- pick_one(selected_gam)
       gam_prop[chosen] <- 0
-      log_prop_ratio <- log(prob_add) -
-        log(prob_delete) +
+      prob_fwd <- if (current_model_size == p) 1 else prob_delete
+      prob_rev <- if (current_model_size == 1) 1 else prob_add
+      log_prop_ratio <- log(prob_rev) -
+        log(prob_fwd) +
         log(current_model_size) -
         log(p - current_model_size + 1)
-    } else if (unif_gam < prob_delete + prob_add) {
+    } else if (length(selected_gam) == 0 || unif_gam < prob_delete + prob_add) {
       # Add a randomly chosen inactive variable
-      chosen <- sample(removed_gam)[1]
+      chosen <- pick_one(removed_gam)
       gam_prop[chosen] <- 1
-      log_prop_ratio <- log(prob_delete) -
-        log(prob_add) +
+      prob_fwd <- if (current_model_size == 0) 1 else prob_add
+      prob_rev <- if (current_model_size == p - 1) 1 else prob_delete
+      log_prop_ratio <- log(prob_rev) -
+        log(prob_fwd) +
         log(p - current_model_size) -
         log(current_model_size + 1)
     } else {
       # Swap one active and one inactive variable
-      chosen1 <- sample(removed_gam)[1]
-      chosen2 <- sample(selected_gam)[1]
+      chosen1 <- pick_one(removed_gam)
+      chosen2 <- pick_one(selected_gam)
       gam_prop[chosen1] <- 1
       gam_prop[chosen2] <- 0
     }
@@ -372,13 +392,16 @@ lsp_fixed_ss_gibbs_sampler <- function(
 
     invsigma_2_current <- rgamma(
       1,
-      shape = n / 2 + a_sigma,
-      rate = 0.5 * sum((y - Z_active %*% beta_gamma)^2) + b_sigma
+      shape = (n + length(beta_gamma)) / 2 + a_sigma,
+      rate = 0.5 *
+        (sum((y - Z_active %*% beta_gamma)^2) + sum(beta_gamma^2) / tau) +
+        b_sigma
     )
 
     # --- Gibbs draw for eta (discrete) | gamma ---
-    # Unnormalized log-probabilities across the eta grid; eta = 0 receives
-    # a zero-inflated weight (down-weighted by 1/(K-1) for all other states)
+    # Unnormalized log-probabilities across the eta grid. The prior is
+    # zero-inflated: P(eta = 0) = 1/2, with the remaining mass split evenly
+    # over the other K - 1 grid values
 
     W <- numeric(K)
     for (k in 1:K) {
@@ -387,7 +410,7 @@ lsp_fixed_ss_gibbs_sampler <- function(
           log(theta_mat[k, ]) +
           (1 - gam_current) * log(1 - theta_mat[k, ])
       )
-      if (k != 1) W[k] <- W[k] / (K - 1)
+      if (k != 1) W[k] <- W[k] - log(K - 1)
     }
     pi_eta <- exp(W - max(W)) / sum(exp(W - max(W))) # log-sum-exp stabilization
     eta_idx_current <- sample(K, 1, prob = pi_eta)
@@ -402,12 +425,14 @@ lsp_fixed_ss_gibbs_sampler <- function(
         invsigma_2_store[store_i] <- invsigma_2_current
         eta_store[store_i] <- E_space[eta_idx_current]
         acc_store[store_i] <- acc
+        pi_eta0_store[store_i] <- pi_eta[1]
       } else {
         gam_mean <- gam_mean + gam_current / n_keep
         beta_mean <- beta_mean + beta_current / n_keep
         invsigma_2_mean <- invsigma_2_mean + invsigma_2_current / n_keep
         eta_mean <- eta_mean + E_space[eta_idx_current] / n_keep
         acc_mean <- acc_mean + acc / n_keep
+        p_eta_0_mean <- p_eta_0_mean + pi_eta[1] / n_keep
       }
     }
   }
@@ -418,6 +443,7 @@ lsp_fixed_ss_gibbs_sampler <- function(
       gamma = gam_store,
       invsigma_2 = invsigma_2_store,
       eta = eta_store,
+      p_eta_0 = pi_eta0_store,
       accs = acc_store
     )
   } else {
@@ -426,6 +452,7 @@ lsp_fixed_ss_gibbs_sampler <- function(
       gamma = gam_mean,
       invsigma_2 = invsigma_2_mean,
       eta = eta_mean,
+      p_eta_0 = p_eta_0_mean,
       accs = acc_mean
     )
   }

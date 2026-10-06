@@ -20,10 +20,18 @@
 #   Scalar log prior probability of gamma
 # ------------------------------------------------------------------------------
 compute_log_prior_gamma <- function(gamma, s, u) {
-  theta <- pmax(1e-10, pmin(s * u, 1 - 1e-10))
+  theta <- pmax(1e-8, pmin(s * u, 1 - 1e-8))
   log_prob <- sum(gamma * log(theta) + (1 - gamma) * log(1 - theta))
   log_prob
 }
+
+# ------------------------------------------------------------------------------
+# Draw one Element of x
+#
+# Safe replacement for sample(x)[1], which draws from 1:x when x is a single number >= 1.
+# ------------------------------------------------------------------------------
+pick_one <- function(x) x[sample.int(length(x), 1)]
+
 
 # ------------------------------------------------------------------------------
 # Log-Posterior (unnormalized, marginalizing over beta and sigma^2)
@@ -32,12 +40,12 @@ compute_log_prior_gamma <- function(gamma, s, u) {
 #   Z        - Selected design matrix with intercept column prepended: cbind(1, X[, gamma == 1])
 #   Z_gram   - Precomputed crossprod(Z)
 #   y        - Response vector (length n)
-#   tau      - Slab variance for the g-prior
+#   tau      - Slab variance: beta_j ~ N(0, tau * sigma^2)
 #   gamma    - Binary inclusion vector (length p)
 #   a_sigma  - Shape hyperparameter for the inverse-gamma prior on sigma^2
 #   b_sigma  - Rate hyperparameter for the inverse-gamma prior on sigma^2
 #   s        - Global sparsity scalar
-#   u        - Weight vector (length p); theta_j = s * u_j
+#   u        - Normalized weight vector (length p); theta_j = s * u_j
 #   n        - Number of observations
 #
 # Returns:
@@ -67,7 +75,7 @@ lsp_random_ss_log_posterior <- function(
   y_Z <- crossprod(Z, y)
   quadratic_term <- as.numeric(t(y_Z) %*% chol2inv(cholQ) %*% y_Z)
 
-  n_gam /
+  -n_gam /
     2 *
     log(tau) -
     .5 * log_detQ -
@@ -138,12 +146,14 @@ lsp_random_ss_log_acceptance_rate <- function(
 #                      NULL triggers automatic grid search; 0 disables weighting.
 #   a_sigma          - Shape hyperparameter for the inverse-gamma prior on sigma^2
 #   b_sigma          - Rate hyperparameter for the inverse-gamma prior on sigma^2
-#   tau              - Slab variance for the g-prior on regression coefficients
-#   a_s              - Shape parameter of the Beta(a_s, b_s) prior on s
-#   b_s              - Rate parameter of the Beta(a_s, b_s) prior on s;
+#   tau              - Slab variance: beta_j ~ N(0, tau * sigma^2)
+#   a_s              - First shape parameter of the Beta(a_s, b_s) prior on s
+#   b_s              - Second shape parameter of the Beta(a_s, b_s) prior on s;
 #                      defaults to p following Rockova & George (2018)
 #   s_proposal_sigma - Standard deviation of the random-walk proposal for s
 #                      on the logit scale
+#   s_max            - Value of s used only to build the automatic eta grid:
+#                      the largest grid value satisfies s_max * max_j u_j < 1
 #   iter             - Total number of MCMC iterations
 #   burn_in          - Number of initial iterations discarded as burn-in
 #   thin             - Thinning interval applied after burn-in
@@ -164,6 +174,7 @@ lsp_random_ss_log_acceptance_rate <- function(
 #     s          - Posterior draws (or mean) of the sparsity parameter
 #     accs       - Metropolis acceptance indicators for gamma (or mean rate)
 #     acc_s      - Metropolis acceptance indicators for s (or mean rate)
+#     p_eta_0    - Full-conditional probability of eta = 0 at each draw
 # ------------------------------------------------------------------------------
 lsp_random_ss_gibbs_sampler <- function(
   X,
@@ -176,6 +187,7 @@ lsp_random_ss_gibbs_sampler <- function(
   a_s = 1,
   b_s = NA,
   s_proposal_sigma = 1,
+  s_max = 0.01,
   iter = 10000,
   burn_in = 5000,
   thin = 1,
@@ -193,15 +205,15 @@ lsp_random_ss_gibbs_sampler <- function(
     # No weights supplied: fix eta = 0, which sets all u_j = 1
     E_space <- 0
   } else if (is.null(E_space)) {
-    # Search for the largest eta such that s * u_j < 1 for all j,
-    # evaluated at the conservative anchor s = 0.01
+    # Search for the largest eta (up to 20) such that s * u_j < 1 for all j,
+    # evaluated at s = s_max
     eta_max <- 0
     step_size <- 1
-    theta_bound <- 0.01 * max(weights)^eta_max / mean(weights^eta_max)
+    theta_bound <- s_max * max(weights)^eta_max / mean(weights^eta_max)
 
     while (eta_max <= 20) {
       eta_max <- eta_max + step_size
-      theta_bound <- 0.01 * max(weights)^eta_max / mean(weights^eta_max)
+      theta_bound <- s_max * max(weights)^eta_max / mean(weights^eta_max)
 
       if (theta_bound >= 1) {
         eta_max <- eta_max - step_size
@@ -215,8 +227,14 @@ lsp_random_ss_gibbs_sampler <- function(
         }
       }
     }
+    eta_max <- min(eta_max, 20)
+
     E_space <- seq(0, eta_max, length.out = 11)
     rm(eta_max)
+  } else {
+    # User-supplied grid: ensure eta = 0 is present and listed first, since
+    # the zero-inflated prior mass and p_eta_0 both attach to E_space[1]
+    E_space <- sort(unique(c(0, E_space)))
   }
 
   p <- ncol(X)
@@ -243,7 +261,7 @@ lsp_random_ss_gibbs_sampler <- function(
     }
   }
 
-  # Default b_s following Rockova & George (2018): Beta(1, p) prior on s
+  # Default b_s = p; with a_s = 1 this is the Beta(1, p) prior of Rockova & George (2018)
   if (is.na(b_s)) {
     b_s <- p
   }
@@ -251,7 +269,7 @@ lsp_random_ss_gibbs_sampler <- function(
   # --------------------------------------------------------------------------
   # Pre-allocate storage
   # --------------------------------------------------------------------------
-  n_keep <- ceiling((iter - burn_in) / thin)
+  n_keep <- floor((iter - burn_in) / thin)
 
   if (return_samples) {
     gam_store <- matrix(0, nrow = n_keep, ncol = p)
@@ -261,6 +279,7 @@ lsp_random_ss_gibbs_sampler <- function(
     acc_s_store <- numeric(n_keep)
     eta_store <- numeric(n_keep)
     s_store <- numeric(n_keep)
+    pi_eta0_store <- numeric(n_keep)
   } else {
     gam_mean <- numeric(p)
     beta_mean <- numeric(p + 1)
@@ -269,6 +288,7 @@ lsp_random_ss_gibbs_sampler <- function(
     acc_s_mean <- 0
     eta_mean <- 0
     s_mean <- 0
+    p_eta_0_mean <- 0
   }
 
   # --------------------------------------------------------------------------
@@ -322,32 +342,36 @@ lsp_random_ss_gibbs_sampler <- function(
     Z_old_gram <- crossprod(Z_old)
 
     unif_gam <- runif(1)
-    if (length(selected_gam) == 0) {
-      unif_gam <- 0.5
-    } # force an add when model is empty
     log_prop_ratio <- 0
     current_model_size <- sum(gam_prop)
 
-    if (unif_gam < prob_delete || length(removed_gam) == 0) {
+    if (
+      length(removed_gam) == 0 ||
+        (length(selected_gam) > 0 && unif_gam < prob_delete)
+    ) {
       # Delete a randomly chosen active variable
-      chosen <- sample(selected_gam)[1]
+      chosen <- pick_one(selected_gam)
       gam_prop[chosen] <- 0
-      log_prop_ratio <- log(prob_add) -
-        log(prob_delete) +
+      prob_fwd <- if (current_model_size == p) 1 else prob_delete
+      prob_rev <- if (current_model_size == 1) 1 else prob_add
+      log_prop_ratio <- log(prob_rev) -
+        log(prob_fwd) +
         log(current_model_size) -
         log(p - current_model_size + 1)
-    } else if (unif_gam < prob_delete + prob_add) {
+    } else if (length(selected_gam) == 0 || unif_gam < prob_delete + prob_add) {
       # Add a randomly chosen inactive variable
-      chosen <- sample(removed_gam)[1]
+      chosen <- pick_one(removed_gam)
       gam_prop[chosen] <- 1
-      log_prop_ratio <- log(prob_delete) -
-        log(prob_add) +
+      prob_fwd <- if (current_model_size == 0) 1 else prob_add
+      prob_rev <- if (current_model_size == p - 1) 1 else prob_delete
+      log_prop_ratio <- log(prob_rev) -
+        log(prob_fwd) +
         log(p - current_model_size) -
         log(current_model_size + 1)
     } else {
       # Swap one active and one inactive variable
-      chosen1 <- sample(removed_gam)[1]
-      chosen2 <- sample(selected_gam)[1]
+      chosen1 <- pick_one(removed_gam)
+      chosen2 <- pick_one(selected_gam)
       gam_prop[chosen1] <- 1
       gam_prop[chosen2] <- 0
     }
@@ -406,8 +430,10 @@ lsp_random_ss_gibbs_sampler <- function(
 
     invsigma_2_current <- rgamma(
       1,
-      shape = n / 2 + a_sigma,
-      rate = 0.5 * sum((y - Z_active %*% beta_gamma)^2) + b_sigma
+      shape = (n + length(beta_gamma)) / 2 + a_sigma,
+      rate = 0.5 *
+        (sum((y - Z_active %*% beta_gamma)^2) + sum(beta_gamma^2) / tau) +
+        b_sigma
     )
 
     # --- Metropolis-Hastings step for s | gamma, eta ---
@@ -418,50 +444,43 @@ lsp_random_ss_gibbs_sampler <- function(
     logit_s_new <- rnorm(1, mean = logit_s, sd = s_proposal_sigma)
     s_new <- 1 / (1 + exp(-logit_s_new))
 
-    if (max(s_new * u_mat[eta_idx_current, ]) >= 1) {
-      # Reject immediately if any theta_j = s * u_j would exceed 1
-      accept_s <- FALSE
+    log_prior_s_new <- dbeta(s_new, a_s, b_s, log = TRUE)
+    log_prior_s_old <- dbeta(s_current, a_s, b_s, log = TRUE)
+
+    log_lik_s_new <- compute_log_prior_gamma(
+      gam_current,
+      s_new,
+      u_mat[eta_idx_current, ]
+    )
+    log_lik_s_old <- compute_log_prior_gamma(
+      gam_current,
+      s_current,
+      u_mat[eta_idx_current, ]
+    )
+
+    # Jacobian: |d(logit s)/ds| = 1 / [s(1-s)], so log|J| = log(s) + log(1-s)
+    log_jacobian_new <- log(s_new) + log(1 - s_new)
+    log_jacobian_old <- log(s_current) + log(1 - s_current)
+
+    log_ratio_s <- (log_lik_s_new + log_prior_s_new + log_jacobian_new) -
+      (log_lik_s_old + log_prior_s_old + log_jacobian_old)
+
+    if (log(runif(1)) < log_ratio_s) {
+      s_current <- s_new
+      accept_s <- TRUE
     } else {
-      log_prior_s_new <- dbeta(s_new, a_s, b_s, log = TRUE)
-      log_prior_s_old <- dbeta(s_current, a_s, b_s, log = TRUE)
-
-      log_lik_s_new <- compute_log_prior_gamma(
-        gam_current,
-        s_new,
-        u_mat[eta_idx_current, ]
-      )
-      log_lik_s_old <- compute_log_prior_gamma(
-        gam_current,
-        s_current,
-        u_mat[eta_idx_current, ]
-      )
-
-      # Jacobian: |d(logit s)/ds| = 1 / [s(1-s)], so log|J| = log(s) + log(1-s)
-      log_jacobian_new <- log(s_new) + log(1 - s_new)
-      log_jacobian_old <- log(s_current) + log(1 - s_current)
-
-      log_ratio_s <- (log_lik_s_new + log_prior_s_new + log_jacobian_new) -
-        (log_lik_s_old + log_prior_s_old + log_jacobian_old)
-
-      if (log(runif(1)) < log_ratio_s) {
-        s_current <- s_new
-        accept_s <- TRUE
-      } else {
-        accept_s <- FALSE
-      }
+      accept_s <- FALSE
     }
 
     # --- Gibbs draw for eta (discrete) | gamma, s ---
-    # Unnormalized log-probabilities across the eta grid; eta = 0 receives
-    # a zero-inflated weight (all other states down-weighted by 1/(K-1))
+    # Unnormalized log-probabilities across the eta grid. The prior is
+    # zero-inflated: P(eta = 0) = 1/2, with the remaining mass split evenly
+    # over the other K - 1 grid values
 
     W <- numeric(K)
     for (k in 1:K) {
-      theta_k <- pmin(pmax(s_current * u_mat[k, ], 1e-4), 1 - 1e-4)
-      W[k] <- sum(
-        gam_current * log(theta_k) + (1 - gam_current) * log(1 - theta_k)
-      )
-      if (k != 1) W[k] <- W[k] / (K - 1)
+      W[k] <- compute_log_prior_gamma(gam_current, s_current, u_mat[k, ])
+      if (k != 1) W[k] <- W[k] - log(K - 1)
     }
     pi_eta <- exp(W - max(W)) / sum(exp(W - max(W))) # log-sum-exp stabilization
     eta_idx_current <- sample(K, 1, prob = pi_eta)
@@ -478,6 +497,7 @@ lsp_random_ss_gibbs_sampler <- function(
         s_store[store_i] <- s_current
         acc_store[store_i] <- acc
         acc_s_store[store_i] <- accept_s
+        pi_eta0_store[store_i] <- pi_eta[1]
       } else {
         gam_mean <- gam_mean + gam_current / n_keep
         beta_mean <- beta_mean + beta_current / n_keep
@@ -486,6 +506,7 @@ lsp_random_ss_gibbs_sampler <- function(
         s_mean <- s_mean + s_current / n_keep
         acc_mean <- acc_mean + acc / n_keep
         acc_s_mean <- acc_s_mean + as.numeric(accept_s) / n_keep
+        p_eta_0_mean <- p_eta_0_mean + pi_eta[1] / n_keep
       }
     }
   }
@@ -496,6 +517,7 @@ lsp_random_ss_gibbs_sampler <- function(
       gamma = gam_store,
       invsigma_2 = invsigma_2_store,
       eta = eta_store,
+      p_eta_0 = pi_eta0_store,
       s = s_store,
       accs = acc_store,
       acc_s = acc_s_store
@@ -506,6 +528,7 @@ lsp_random_ss_gibbs_sampler <- function(
       gamma = gam_mean,
       invsigma_2 = invsigma_2_mean,
       eta = eta_mean,
+      p_eta_0 = p_eta_0_mean,
       s = s_mean,
       accs = acc_mean,
       acc_s = acc_s_mean
