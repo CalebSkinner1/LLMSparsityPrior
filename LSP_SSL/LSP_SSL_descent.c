@@ -82,7 +82,7 @@ SEXP SSL_gaussian(SEXP X_, SEXP y_, SEXP initialbeta_, SEXP penalty_, SEXP varia
   int max_iter       = INTEGER(max_iter_)[0];
   int count_max      = INTEGER(counter_)[0];
 
-    // Read sparsity as a length-p vector (always passed as such from R)
+  // Read sparsity as a length-p vector (always passed as such from R)
   double *sparsity_in = REAL(theta_);
 
   // Initialise scalar s for adaptive updates and export.
@@ -231,14 +231,10 @@ SEXP SSL_gaussian(SEXP X_, SEXP y_, SEXP initialbeta_, SEXP penalty_, SEXP varia
               b[l * p + j] = SSL(z[j], a[j], lambda0, lambda1,
                                  theta_vec[j], 1, xnorm[j], delta[j], sigma2);
 
-              if (p >= thres) {
-                double shift = b[l * p + j] - a[j];
-                if (shift != 0)
-                  for (int i = 0; i < n; i++) r[i] -= shift * X[j * n + i];
-              } else {
-                newa[j] = SSL(z[j], a[j], lambda0, lambda1,
-                              theta_vec[j], 1, xnorm[j], delta[j], sigma2);
-              }
+              double shift = b[l * p + j] - a[j];
+              if (shift != 0)
+                for (int i = 0; i < n; i++) r[i] -= shift * X[j * n + i];
+              if (p < thres) newa[j] = b[l * p + j];
 
               counter++;
             }
@@ -285,8 +281,7 @@ SEXP SSL_gaussian(SEXP X_, SEXP y_, SEXP initialbeta_, SEXP penalty_, SEXP varia
 
             if (b[l * p + j] != 0) {
               e1[j] = e2[j] = 1;
-              if (p >= thres)
-                for (int i = 0; i < n; i++) r[i] -= b[l * p + j] * X[j * n + i];
+              for (int i = 0; i < n; i++) r[i] -= b[l * p + j] * X[j * n + i];
               a[j] = b[l * p + j];
               violations++;
               counter++;
@@ -316,7 +311,7 @@ SEXP SSL_gaussian(SEXP X_, SEXP y_, SEXP initialbeta_, SEXP penalty_, SEXP varia
       }
 
       // ---- Check full-set violations ----
-      int violations = 0;
+      violations = 0;
       counter = 0;
 
       for (int j = 0; j < p; j++) {
@@ -333,8 +328,7 @@ SEXP SSL_gaussian(SEXP X_, SEXP y_, SEXP initialbeta_, SEXP penalty_, SEXP varia
 
           if (b[l * p + j] != 0) {
             e1[j] = e2[j] = 1;
-            if (p >= thres)
-              for (int i = 0; i < n; i++) r[i] -= b[l * p + j] * X[j * n + i];
+            for (int i = 0; i < n; i++) r[i] -= b[l * p + j] * X[j * n + i];
             a[j] = b[l * p + j];
             violations++;
             counter++;

@@ -12,6 +12,8 @@
 #   - A discrete zero-inflated prior on the concentration parameter eta,
 #     selected post-hoc by evaluating the log-posterior across the eta grid.
 
+source("utils.R") # standardize_X
+
 # ------------------------------------------------------------------------------
 # Load compiled C routine
 # ------------------------------------------------------------------------------
@@ -33,28 +35,35 @@ stopifnot(is.loaded("SSL_gaussian", PACKAGE = "lsp_ssl"))
 # selected, yielding a final coefficient path.
 #
 # Arguments:
-#   X             - n x p predictor matrix (or data frame coercible to matrix)
+#   X             - n x p predictor matrix (or data frame coercible to matrix);
+#                   columns are standardized internally and coefficients are
+#                   returned on the original scale
 #   y             - Response vector (length n)
 #   weights       - Optional LLM-derived weight vector (length p);
-#                   defaults to uniform weights
+#                   defaults to uniform weights (eta = 0)
 #   E_space       - Grid of eta values for weight concentration;
-#                   NULL triggers automatic grid search
-#   eta_zero_mass - Prior mass placed on eta = 0 in the discrete prior on eta;
-#                   the remaining mass is split uniformly over eta > 0
+#                   NULL triggers automatic grid search (or eta = 0 when
+#                   weights is NULL)
+#   eta_pi_0      - Prior probability that eta = 0; the remaining mass is split
+#                   uniformly over the nonzero values of E_space. Set to 0 to
+#                   fix eta at a single value (e.g., E_space = 2, eta_pi_0 = 0)
 #   penalty       - "adaptive" or "separable"; passed to the C routine
 #   variance      - "fixed" or "unknown"; governs sigma^2 estimation
 #   lambda1       - Slab penalty (scalar); defaults to lambda0[1] if missing
 #   lambda0       - Spike penalty sequence (increasing); defaults to a
 #                   grid of nlambda values in [1, n]
-#   beta.init     - Initial coefficient vector (length p); defaults to zeros
+#   beta.init     - Initial coefficient vector (length p) on the original
+#                   scale of X; defaults to zeros
 #   nlambda       - Number of lambda0 values when lambda0 is auto-generated
 #   sparsity      - Scalar or length-p vector of prior inclusion probabilities;
 #                   used as the baseline for theta_j = sparsity_j * v_j
 #   sigma         - Initial noise standard deviation (used when variance = "fixed"
 #                   or as a starting value when variance = "unknown")
-#   a_s           - Shape parameter of the Beta(a_s, b_s) prior on s
-#   b_s           - Rate parameter of the Beta(a_s, b_s) prior on s;
+#   a_s           - First shape parameter of the Beta(a_s, b_s) prior on s
+#   b_s           - Second shape parameter of the Beta(a_s, b_s) prior on s;
 #                   defaults to p following Rockova & George (2018)
+#   s_max.        - Value of s used only to build the automatic eta grid:
+#                   the largest grid value satisfies s_max * max_j u_j < 1
 #   eps           - Convergence tolerance for coordinate descent
 #   max.iter      - Maximum coordinate descent iterations per lambda0
 #   counter       - Number of EM steps per coordinate descent sweep
@@ -62,7 +71,8 @@ stopifnot(is.loaded("SSL_gaussian", PACKAGE = "lsp_ssl"))
 #
 # Returns:
 #   An object of class "SSLASSO" (list) with components:
-#     beta      - p x nlambda matrix of MAP coefficient estimates
+#     beta      - p x nlambda matrix of MAP coefficient estimates on the
+#                 original scale of X
 #     intercept - Intercept values along the lambda0 path
 #     iter      - Iteration counts at each lambda0
 #     lambda0   - Spike penalty sequence used
@@ -82,7 +92,7 @@ lsp_ssl_map <- function(
   y,
   weights = NULL,
   E_space = NULL,
-  eta_zero_mass = 0.5,
+  eta_pi_0 = 0.5,
   penalty = c("adaptive", "separable"),
   variance = c("fixed", "unknown"),
   lambda1,
@@ -124,7 +134,8 @@ lsp_ssl_map <- function(
     stop("Missing data (NA's) detected. Eliminate missing data before calling.")
   }
 
-  XX <- scale(X, center = TRUE, scale = FALSE)
+  X_std <- standardize_X(X)
+  XX <- X_std$X
   yy <- y - mean(y)
   p <- ncol(XX)
   n <- length(yy)
@@ -142,6 +153,7 @@ lsp_ssl_map <- function(
   }
 
   # Validate weights; default to uniform (eta = 0 baseline)
+  weights_supplied <- !is.null(weights)
   if (is.null(weights)) {
     weights <- rep(1.0, p)
   } else {
@@ -160,7 +172,14 @@ lsp_ssl_map <- function(
     s_max <- sparsity
   }
 
-  if (is.null(E_space)) {
+  if (eta_pi_0 < 0 || eta_pi_0 > 1) {
+    stop("eta_pi_0 must be in [0, 1]")
+  }
+
+  if (is.null(E_space) && !weights_supplied) {
+    # No weights supplied: fix eta = 0 (standard SSL)
+    E_space <- 0
+  } else if (is.null(E_space)) {
     eta_max <- 0
     step_size <- 1
     theta_bound <- max(s_max) * max(weights)^eta_max / mean(weights^eta_max)
@@ -182,15 +201,13 @@ lsp_ssl_map <- function(
         }
       }
     }
+    eta_max <- min(eta_max, 20)
     E_space <- seq(0, eta_max, length.out = 11)
     rm(eta_max)
   } else {
     E_space <- sort(unique(c(0, as.numeric(E_space))))
     if (any(E_space < 0)) {
       stop("E_space must be nonnegative")
-    }
-    if (eta_zero_mass <= 0 || eta_zero_mass >= 1) {
-      stop("eta_zero_mass must be in (0, 1)")
     }
   }
 
@@ -200,10 +217,11 @@ lsp_ssl_map <- function(
 
   if (missing(lambda0)) {
     lambda0 <- seq(1, n, length = nlambda)
-    lambda1 <- lambda0[1]
   } else {
     nlambda <- length(lambda0)
-    if (missing(lambda1)) lambda1 <- lambda0[1]
+  }
+  if (missing(lambda1)) {
+    lambda1 <- lambda0[1]
   }
 
   if (sum((lambda0[-1] - lambda0[-nlambda]) > 0) != nlambda - 1) {
@@ -237,7 +255,9 @@ lsp_ssl_map <- function(
   }
 
   # --- Run coordinate descent for each eta ---
+  # Coordinate descent operates on standardized X, so beta.init is rescaled
 
+  beta.init <- beta.init * X_std$scale
   eta_results <- vector("list", n_eta)
   for (e in seq_len(n_eta)) {
     v_vec_e <- make_v_vec(E_space[e])
@@ -314,12 +334,14 @@ lsp_ssl_map <- function(
         )
 
         # Apply zero-inflated discrete prior on eta: eta = 0 receives mass
-        # eta_zero_mass; the remaining mass is split uniformly over eta > 0
-        if (n_eta > 1L && E_space[e] != 0.0) {
+        # eta_pi_0; the remaining mass is split uniformly over eta > 0
+        if (n_eta > 1L) {
           lp <- lp +
-            log(1 - eta_zero_mass) -
-            log(n_eta - 1L) -
-            log(eta_zero_mass)
+            if (E_space[e] == 0.0) {
+              log(eta_pi_0)
+            } else {
+              log(1 - eta_pi_0) - log(n_eta - 1L)
+            }
         }
         lp
       },
@@ -348,14 +370,14 @@ lsp_ssl_map <- function(
       paste(lambda0[iter == max.iter], collapse = ", ")
     )
   }
-  if (iter[nlambda] == max.iter) {
+  if (warn && iter[nlambda] == max.iter) {
     warning("Algorithm did not converge at the last lambda0 value.")
   }
 
-  # --- Recover intercept and format output ---
+  # --- Recover original-scale coefficients and intercept, format output ---
 
-  beta <- bb
-  intercept <- rep(mean(y), nlambda) - crossprod(attr(XX, "scaled:center"), bb)
+  beta <- bb / X_std$scale
+  intercept <- rep(mean(y), nlambda) - crossprod(X_std$center, beta)
 
   varnames <- if (is.null(colnames(X))) {
     paste0("V", seq_len(ncol(X)))
@@ -396,14 +418,14 @@ lsp_ssl_map <- function(
 #
 # Arguments:
 #   y             - Mean-centered response vector (length n)
-#   X             - Mean-centered design matrix (n x p)
+#   X             - Standardized design matrix (n x p)
 #   beta_final    - MAP coefficient vector (length p)
 #   sigma_final   - Noise standard deviation at which to evaluate the likelihood
 #   v_vec         - Normalized weight vector (length p); v_j = w_j^eta / mean(w^eta)
 #   lambda1       - Slab penalty (scalar)
 #   lambda0_final - Spike penalty at the current path point (scalar)
-#   a_s           - Shape parameter of the Beta prior on s
-#   b_s           - Rate parameter of the Beta prior on s
+#   a_s           - First shape parameter of the Beta prior on s
+#   b_s           - Second shape parameter of the Beta prior on s
 #   s_fixed       - If non-NULL, sparsity is treated as fixed at this value
 #                   and the Beta prior on s is excluded (used for "separable" penalty)
 #   rss           - Precomputed residual sum of squares; recomputed if NULL

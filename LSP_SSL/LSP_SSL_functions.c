@@ -7,12 +7,10 @@
 #include <stdio.h>
 
 
-// --- CHANGE: added v_vec_ to declaration ---
 SEXP SSL_gaussian(SEXP X_, SEXP y_, SEXP initialbeta_, SEXP penalty_, SEXP variance_,
                   SEXP lambda1_, SEXP lambda0s_, SEXP theta_, SEXP v_vec_,
                   SEXP sigma_, SEXP min_sigma2_, SEXP a_, SEXP b_,
                   SEXP eps_, SEXP max_iter_, SEXP counter_);
-SEXP standardize(SEXP X_);
 
 
 // Cross product of y with jth column of X
