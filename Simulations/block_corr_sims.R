@@ -1,10 +1,14 @@
-# Simulation Driver — Weight Quality Study
+# Simulation Driver — Weight Quality Study (Block Correlation)
 #
 # Evaluates LSP model performance across a grid of sample sizes (n_range) and
-# synthetic weight quality levels (phi_range). For each n, baseline models
-# (no LLM weights) are fit once and cached; LSP and LLM-Lasso models are then
-# fit for each phi level reusing the same datasets. Results are written to one
-# CSV per (phi, n) combination.
+# synthetic weight quality levels (phi_range) under a block-diagonal covariance
+# structure: covariates are partitioned into equal-sized blocks with
+# exchangeable correlation Xcorr within each block and zero correlation
+# between blocks. Signal positions are randomly permuted in each replicate,
+# with the weight vector permuted identically, so results do not depend on
+# how the signals line up with the blocks. For each n, baseline models (no LLM weights) are fit once
+# and cached; LSP and LLM-Lasso models are then fit for each phi level reusing
+# the same datasets. Results are written to one CSV per (phi, n) combination.
 #
 # Depends on: Simulations/weight_quality_support.R
 
@@ -18,12 +22,16 @@ source("Simulations/weight_quality_support.R")
 p <- 1000
 n_range <- c(100, 250)
 s <- 20
+# Canonical ordering (signals last). Weights are generated against this
+# ordering and permuted per replicate inside sim_function.
 true_gamma <- c(rep(0, p - s), rep(1, s))
+randomize_beta <- TRUE
 effect_size <- 1
 Xvar <- 1
-Xcorr <- 0.5
+Xcorr <- 0.7
+block_size <- 50
 y_sd <- 1
-cov_mat <- simstudy::genCorMat(p, cors = rep(Xcorr, choose(p, 2)))
+cov_mat <- block_cor_mat(p, block_size = block_size, rho = Xcorr)
 
 # Sampler hyperparameters
 a_sigma <- 1
@@ -39,7 +47,7 @@ random_s <- TRUE
 fixed_s <- FALSE
 
 # Simulation grid
-phi_range <- c(0.5, 0.6, 0.7, 0.75, seq(0.8, 1.0, by = 0.01))
+phi_range <- seq(0.5, 1.0, by = 0.1)
 n_replications <- 500
 
 # ------------------------------------------------------------------------------
@@ -47,7 +55,7 @@ n_replications <- 500
 # ------------------------------------------------------------------------------
 
 total_cores <- parallel::detectCores(logical = FALSE)
-cores <- min(total_cores, 20)
+cores <- min(total_cores, 25)
 plan(multicore, workers = cores)
 options(future.globals.maxSize = 2000 * 1024^2)
 
@@ -63,7 +71,11 @@ for (n in n_range) {
   cached_baselines <- future_map(
     1:n_replications,
     function(seed_idx) {
-      baseline_data_sim_function(seed = seed_idx, n = n)
+      baseline_data_sim_function(
+        seed = seed_idx,
+        n = n,
+        randomize_beta = randomize_beta
+      )
     },
     .options = furrr_options(seed = TRUE)
   )
@@ -77,10 +89,10 @@ for (n in n_range) {
     pairwise_agreement <- pairwise_weight_agreement(true_gamma, weights)
     roc_agreement <- ROC_weight_agreement(true_gamma, weights)
 
-    file_name <- paste0("weights", phi, "_n", n, ".csv")
+    file_name <- paste0("block", Xcorr, "_weights", phi, "_n", n, ".csv")
 
     # Fit LSP and LLM-Lasso models across all replicates in parallel;
-    # bind results into a long tibble indexed by simulation ID and method
+    # bind results into a long tibble indexed by simulation ID and method.
     sim_results <- future_map(
       cached_baselines,
       function(baseline) {

@@ -21,7 +21,11 @@
 # ------------------------------------------------------------------------------
 
 suppressPackageStartupMessages({
-  library("tidyverse")
+  library("dplyr")
+  library("tidyr")
+  library("purrr")
+  library("stringr")
+  library("readr")
   library("hypergeo")
   library("glmnet")
   library("parallel")
@@ -80,6 +84,35 @@ ROC_weight_agreement <- function(true_gamma, weights) {
     direction = "<"
   )
   pROC::auc(ROC)[1]
+}
+
+# ------------------------------------------------------------------------------
+# Block Correlation Structure
+#
+# Constructs a p x p block-diagonal correlation matrix with equal-sized blocks.
+# Within each block, covariates share a common (exchangeable) correlation rho;
+# covariates in different blocks are uncorrelated.
+#
+# Arguments:
+#   p          - Number of covariates
+#   block_size - Number of covariates per block (must divide p)
+#   rho        - Within-block correlation
+#
+# Returns:
+#   A p x p correlation matrix
+# ------------------------------------------------------------------------------
+block_cor_mat <- function(p, block_size, rho) {
+  if (p %% block_size != 0) {
+    stop("p must be divisible by block_size")
+  }
+  if (rho <= -1 / (block_size - 1) || rho >= 1) {
+    stop("rho must lie in (-1 / (block_size - 1), 1) for positive definiteness")
+  }
+
+  block <- matrix(rho, nrow = block_size, ncol = block_size)
+  diag(block) <- 1
+
+  kronecker(diag(p / block_size), block)
 }
 
 
@@ -171,13 +204,15 @@ compile_model_metrics <- function(model_object, weights, alpha, beta) {
   signal <- beta != 0
 
   if (is.numeric(model_object)) {
-    # Lasso / MAP: coefficient vector includes intercept at position 1
     gamma_predict <- as.vector(model_object != 0)[-1]
     l1 <- sum(abs(as.vector(model_object) - c(alpha, beta)))
+    p_eta_0 <- NA_real_
+    eta_post <- NA_real_
   } else {
-    # MCMC: posterior means of gamma and beta stored in list
     gamma_predict <- model_object$gamma
     l1 <- sum(abs(model_object$beta - c(alpha, beta)))
+    p_eta_0 <- model_object$p_eta_0 %||% NA_real_
+    eta_post <- model_object$eta %||% NA_real_
   }
 
   fp <- length(which(gamma_predict[!signal] > 0.5))
@@ -202,7 +237,9 @@ compile_model_metrics <- function(model_object, weights, alpha, beta) {
       ),
       l1 = l1,
       fp = fp,
-      fn = fn
+      fn = fn,
+      p_eta_0 = p_eta_0,
+      eta_post = eta_post
     )
 }
 
@@ -346,7 +383,8 @@ llm_lasso_simp <- function(
     y_train <- if (is.factor(y_train)) y_train else factor(y_train)
   }
 
-  X_train_sc <- .scale_like_train(X_train)$X_train
+  sc <- .scale_like_train(X_train)
+  X_train_sc <- sc$X_train
   w <- .align_and_check_weights(weights, X_train_sc)
   pf_list <- lapply(0:max_imp_pow, function(i) 1 / (w^i))
   pf_names <- paste0("1/imp^", 0:max_imp_pow)
@@ -400,8 +438,10 @@ llm_lasso_simp <- function(
 
   if (glm_family != "multinomial") {
     co <- as.numeric(coef(cv_best, s = s_choice))
-    n_features <- sum(co[-1] != 0)
-    coef_obj <- co
+    b <- co[-1] / sc$scale
+    b0 <- co[1] - sum(sc$center * b)
+    coef_obj <- c(b0, b)
+    n_features <- sum(b != 0)
   } else {
     co_list <- coef(cv_best, s = s_choice)
     feat_nonzero <- Reduce(
@@ -432,11 +472,14 @@ llm_lasso_simp <- function(
 # Generate data and fit weight-free baseline models (Lasso, horseshoe, and
 # optionally standard SS / SSL without LLM weights). Returns a list containing
 # the generated dataset and fitted baseline objects, to be passed to sim_function.
-baseline_data_sim_function <- function(seed, n) {
+baseline_data_sim_function <- function(seed, n, randomize_beta = FALSE) {
   set.seed(seed)
 
   X <- MASS::mvrnorm(n, mu = rep(0, p), Xvar * cov_mat)
-  beta <- c(rep(0, p - s), rep(effect_size, s))
+
+  # permute beta ordering
+  perm <- if (randomize_beta) sample.int(p) else seq_len(p)
+  beta <- c(rep(0, p - s), rep(effect_size, s))[perm]
   alpha <- effect_size
   y <- X %*% beta + alpha + rnorm(n, 0, sd = y_sd)
 
@@ -510,7 +553,7 @@ baseline_data_sim_function <- function(seed, n) {
   }
 
   list(
-    data = list(X = X, y = y, alpha = alpha, beta = beta),
+    data = list(X = X, y = y, alpha = alpha, beta = beta, perm = perm),
     baselines = baseline_fits
   )
 }
@@ -523,6 +566,8 @@ sim_function <- function(baseline_fits, weights) {
   y <- baseline_fits$data$y
   beta <- baseline_fits$data$beta
   alpha <- baseline_fits$data$alpha
+
+  weights <- weights[baseline_fits$data$perm]
 
   all_fits <- baseline_fits$baselines
 
@@ -591,11 +636,20 @@ sim_function <- function(baseline_fits, weights) {
 
 # Fit LSP models at a user-specified fixed eta value (set_eta) for a single
 # simulation replicate. Used to assess sensitivity to the choice of eta.
-eta_sensitivity_function <- function(seed, weights, set_eta) {
+eta_sensitivity_function <- function(
+  seed,
+  weights,
+  set_eta,
+  randomize_beta = FALSE
+) {
   set.seed(seed)
 
   X <- MASS::mvrnorm(n, mu = rep(0, p), Xvar * cov_mat)
-  beta <- c(rep(0, p - s), rep(effect_size, s))
+
+  # permute beta ordering, and align weights to the same ordering
+  perm <- if (randomize_beta) sample.int(p) else seq_len(p)
+  beta <- c(rep(0, p - s), rep(effect_size, s))[perm]
+  weights <- weights[perm]
   alpha <- effect_size
   y <- X %*% beta + alpha + rnorm(n, 0, sd = y_sd)
 
