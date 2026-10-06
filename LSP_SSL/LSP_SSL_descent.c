@@ -152,7 +152,7 @@ SEXP SSL_gaussian(SEXP X_, SEXP y_, SEXP initialbeta_, SEXP penalty_, SEXP varia
   if (p < thres) {
     for (int j = 0; j < p; j++) {
       XTY[j] = 0;
-      for (int i = 1; i < n; i++) XTY[j] += X[j * n + i] * y[i];
+      for (int i = 0; i < n; i++) XTY[j] += X[j * n + i] * y[i];
     }
     for (int i = 0; i < p; i++)
       for (int j = 0; j < p; j++) {

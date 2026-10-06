@@ -90,6 +90,7 @@ lsp_ssl_map <- function(
   beta.init = numeric(ncol(X)),
   nlambda = 100,
   sparsity = 0.01,
+  s_max = 0.01,
   sigma = 1,
   a_s = 1,
   b_s,
@@ -155,15 +156,18 @@ lsp_ssl_map <- function(
 
   # --- Build the eta grid ---
   # Search for the largest eta such that all theta_j = sparsity_j * v_j < 1
+  if (penalty == "separable") {
+    s_max <- sparsity
+  }
 
   if (is.null(E_space)) {
     eta_max <- 0
     step_size <- 1
-    theta_bound <- max(sparsity) * max(weights)^eta_max / mean(weights^eta_max)
+    theta_bound <- max(s_max) * max(weights)^eta_max / mean(weights^eta_max)
 
     while (eta_max <= 20) {
       eta_max <- eta_max + step_size
-      theta_bound <- max(sparsity) *
+      theta_bound <- max(s_max) *
         max(weights)^eta_max /
         mean(weights^eta_max)
 
@@ -181,8 +185,13 @@ lsp_ssl_map <- function(
     E_space <- seq(0, eta_max, length.out = 11)
     rm(eta_max)
   } else {
-    E_space <- as.numeric(E_space)
-    if (length(E_space) < 1) stop("E_space must contain at least one eta value")
+    E_space <- sort(unique(c(0, as.numeric(E_space))))
+    if (any(E_space < 0)) {
+      stop("E_space must be nonnegative")
+    }
+    if (eta_zero_mass <= 0 || eta_zero_mass >= 1) {
+      stop("eta_zero_mass must be in (0, 1)")
+    }
   }
 
   n_eta <- length(E_space)
@@ -466,11 +475,17 @@ compute_log_posterior <- function(
 #   Numeric coefficient vector (intercept, beta_1, ..., beta_p)
 # ------------------------------------------------------------------------------
 select_lambda0_bic <- function(ssl_object, X, y) {
+  y <- as.numeric(y)
   n <- length(y)
-  rss <- apply(ssl_object$beta, 2, function(b) sum((y - X %*% b)^2))
-  df <- apply(ssl_object$beta, 2, function(b) sum(b != 0))
+  fitted <- sweep(
+    X %*% ssl_object$beta,
+    2,
+    as.numeric(ssl_object$intercept),
+    "+"
+  )
+  rss <- colSums((y - fitted)^2)
+  df <- colSums(ssl_object$beta != 0)
   bic <- n * log(rss / n) + df * log(n)
-
   best_idx <- which.min(bic)
   c(ssl_object$intercept[, best_idx], ssl_object$beta[, best_idx])
 }
