@@ -6,9 +6,10 @@
 # exchangeable correlation Xcorr within each block and zero correlation
 # between blocks. Signal positions are randomly permuted in each replicate,
 # with the weight vector permuted identically, so results do not depend on
-# how the signals line up with the blocks. For each n, baseline models (no LLM weights) are fit once
-# and cached; LSP and LLM-Lasso models are then fit for each phi level reusing
-# the same datasets. Results are written to one CSV per (phi, n) combination.
+# how the signals line up with the blocks. For each n, baseline models (no LLM weights)
+# are fit once and cached; LSP and LLM-Lasso models are then fit for
+# each phi level reusing the same datasets. Results are written to one
+# CSV per (phi, n) combination.
 #
 # Depends on: Simulations/weight_quality_support.R
 
